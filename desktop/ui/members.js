@@ -2,6 +2,11 @@ let peopleData = null, peopleDirty = false, refreshBusy = false;
 let admins = new Set(), friendChanges = new Map();
 let directoryRows = null, directoryBusy = false, membersSub = 'groups';
 const memberEl = id => document.getElementById(id);
+const directoryCategories = new Map(Object.entries({
+  friend:'好友', group:'群聊', enterprise:'企业微信联系人', enterprise_group:'企业微信群',
+  subscription:'订阅号', official_service:'服务号', service:'其他公众号',
+  former:'历史 / 非好友', blocked:'已屏蔽', deleted:'已删除', other:'其他 / 未分类',
+}));
 
 async function peopleRequest(path, data) {
   const r = await fetch(path, data === undefined ? undefined : {
@@ -68,11 +73,17 @@ async function refreshDirectory() {
   directoryBusy = true;
   updateMembersActions();
   const notice = memberEl('directoryNotice');
-  notice.textContent = '正在读取 WeRC 好友目录…';
+  notice.textContent = '正在读取 WeRC 通讯录…';
   try {
-    const data = await peopleRequest('/api/friend-directory');
-    directoryRows = data.friends;
-    notice.textContent = '来自 WeRC 的好友目录，仅供查看。';
+    const data = await peopleRequest('/api/contact-directory');
+    directoryRows = data.contacts.map(row => ({...row, category: directoryCategories.has(row.category) ? row.category : 'other'}));
+    const counts = new Map();
+    for (const row of directoryRows) counts.set(row.category, (counts.get(row.category) || 0) + 1);
+    const select = memberEl('directoryCategory'), previous = select.value;
+    select.replaceChildren(new Option(`全部类别 · ${directoryRows.length}`, ''), ...[...directoryCategories]
+      .filter(([key]) => counts.has(key)).map(([key, label]) => new Option(`${label} · ${counts.get(key)}`, key)));
+    select.value = counts.has(previous) ? previous : '';
+    notice.textContent = data.friend_only ? '当前仅有好友目录权限。要查看其他类别，请在新版 WeRC 授权「允许读取分类通讯录」。' : 'WeRC 本地通讯录，仅供查看。';
   } catch (e) {
     directoryRows = null;
     notice.textContent = e.message;
@@ -91,10 +102,15 @@ function renderDirectory() {
     return;
   }
   const query = memberEl('directorySearch').value.trim().toLowerCase();
-  const rows = directoryRows.filter(f => [f.nickname, f.remark, f.user_id].some(v => String(v).toLowerCase().includes(query)));
-  count.textContent = query ? `${rows.length} / ${directoryRows.length} 位好友` : `${rows.length} 位好友`;
-  body.innerHTML = rows.map(f => `<tr><td>${esc(f.nickname || '—')}</td><td>${esc(f.remark || '—')}</td><td>${esc(f.user_id)}</td></tr>`).join('')
-    || `<tr><td colspan="3">${query ? '没有匹配的好友。' : 'WeRC 本地通讯录没有可显示的好友。'}</td></tr>`;
+  const category = memberEl('directoryCategory').value;
+  const rows = directoryRows.filter(row => (!category || row.category === category) &&
+    [row.nickname, row.remark, row.identifier].some(v => String(v).toLowerCase().includes(query)));
+  const order = [...directoryCategories.keys()];
+  rows.sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category)
+    || String(a.nickname).localeCompare(String(b.nickname), 'zh'));
+  count.textContent = category || query ? `${rows.length} / ${directoryRows.length} 条` : `${rows.length} 条`;
+  body.innerHTML = rows.map(f => `<tr><td>${esc(directoryCategories.get(f.category))}</td><td>${esc(f.nickname || '—')}</td><td>${esc(f.remark || '—')}</td><td>${esc(f.identifier)}</td></tr>`).join('')
+    || `<tr><td colspan="4">${query ? '没有匹配的条目。' : 'WeRC 本地通讯录没有可显示的条目。'}</td></tr>`;
 }
 
 async function refreshPeople() {

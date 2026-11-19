@@ -16,6 +16,13 @@ def run(bundle):
         {'username':'quiet-friend','nickname':'Quiet friend','remark':None},
         {'username':'sample@chatroom','nickname':'Not a friend','remark':None},
     ]}
+    categorized = {'account_id':'test-account','data_mode':'local_categorized_directory','data':[
+        {'username':'friend','nickname':'Test friend','remark':'Test remark','category':'friend'},
+        {'username':'sample@chatroom','nickname':'Sample group','remark':None,'category':'group'},
+        {'username':'gh_sample','nickname':'Sample official','remark':None,'category':'subscription'},
+        {'username':'sample@openim','nickname':'Enterprise contact','remark':None,'category':'enterprise'},
+    ]}
+    directory_enabled = True
     class Fake(BaseHTTPRequestHandler):
         def log_message(self,*a):pass
         def reply(self,obj):
@@ -35,6 +42,7 @@ def run(bundle):
             elif self.path.startswith('/api/v1/contacts?'):self.reply({'data':[]})
             elif self.path == '/api/v1/contacts/group-names?account_id=test-account':self.reply(group_response)
             elif self.path == '/api/v1/contacts/friends?account_id=test-account':self.reply(friend_response)
+            elif self.path == '/api/v1/contacts/directory?account_id=test-account' and directory_enabled:self.reply(categorized)
             else:self.send_error(404)
         def do_POST(self):
             assert self.path=='/api/v1/messages/send-text';sent.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))));self.reply({'data':{'state':'queued','metadata':{'id':'test-ticket'}}})
@@ -82,18 +90,27 @@ def run(bundle):
             assert people['friend_directory'] and not people['astrbot_available']
             page = opener.open(Request(base+'/', headers=headers), timeout=3).read().decode('utf-8')
             assert 'data-sub="directory"' in page and 'id="directoryBody"' in page
-            try: opener.open(base+'/api/friend-directory', timeout=3)
+            try: opener.open(base+'/api/contact-directory', timeout=3)
             except HTTPError as e: assert e.code == 403
             else: raise AssertionError('Unprotected desktop friend directory')
-            directory_req = Request(base+'/api/friend-directory', headers=headers)
-            desktop_friends = json.load(opener.open(directory_req, timeout=5))['friends']
-            assert {row['nickname'] for row in desktop_friends} == {'Test friend', 'Quiet friend'}
-            assert next(row['remark'] for row in desktop_friends if row['nickname']=='Test friend') == 'Test remark'
-            friend_response['account_id'] = 'different-account'
+            directory_req = Request(base+'/api/contact-directory', headers=headers)
+            desktop_directory = json.load(opener.open(directory_req, timeout=5))
+            assert not desktop_directory['friend_only']
+            by_category = {row['category']:row for row in desktop_directory['contacts']}
+            assert set(by_category) == {'friend','group','subscription','enterprise'}
+            assert by_category['friend']['remark'] == 'Test remark'
+            assert by_category['group']['identifier'] == people['groups'][0]['gid']
+            assert by_category['subscription']['identifier'] == 'gh_sample'
+            assert by_category['enterprise']['identifier'] == 'sample@openim'
+            categorized['account_id'] = 'different-account'
             try: opener.open(directory_req, timeout=5)
             except HTTPError as e: assert e.code == 400
-            else: raise AssertionError('Desktop friend directory accepted another account')
-            friend_response['account_id'] = 'test-account'
+            else: raise AssertionError('Desktop directory accepted another account')
+            categorized['account_id'] = 'test-account'
+            directory_enabled = False
+            fallback = json.load(opener.open(directory_req, timeout=5))
+            assert fallback['friend_only'] and {row['nickname'] for row in fallback['contacts']} == {'Test friend','Quiet friend'}
+            directory_enabled = True
             assert [(g['session'], g['name']) for g in people['groups']] == [('sample@chatroom', 'sample@chatroom')]
             previous_id = people['groups'][0]['gid']
             def contact(username, nickname, remark=None, deleted=0):

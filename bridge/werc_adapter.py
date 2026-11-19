@@ -103,6 +103,14 @@ class WeRC:
             raise ValueError('WeRC 未返回当前授权账号的好友目录。')
         return document['data']
 
+    def fetch_directory(self):
+        document = self.request('GET', 'contacts/directory', params={'account_id': self.account}).json()
+        if (not isinstance(document, dict) or document.get('account_id') != self.account
+                or document.get('data_mode') != 'local_categorized_directory'
+                or not isinstance(document.get('data'), list)):
+            raise ValueError('WeRC 未返回当前授权账号的分类通讯录。')
+        return document['data']
+
     def fetch_group_members(self, room):
         # No verified member identities in a native room envelope or contact snapshot.
         return []

@@ -5,7 +5,7 @@
   </div>
   <div class="seg-bar">
     <button class="seg active" data-sub="groups" onclick="switchMembersTab('groups')">群聊</button>
-    <button class="seg" data-sub="directory" onclick="switchMembersTab('directory')" hidden>好友</button>
+    <button class="seg" data-sub="directory" onclick="switchMembersTab('directory')" hidden>通讯录</button>
     <button class="seg" data-sub="friends" onclick="switchMembersTab('friends')" hidden>私聊权限</button>
     <button class="seg" data-sub="admins" onclick="switchMembersTab('admins')" hidden>管理员</button>
     <div class="spacer"></div>
@@ -24,9 +24,13 @@
   </div>
   <div class="members-sub" id="sub-directory">
     <div class="card">
-      <div class="toolbar"><input class="search-input" id="directorySearch" placeholder="搜索昵称、备注或 ID" aria-label="搜索好友通讯录" oninput="renderDirectory()"><div class="spacer"></div><span class="set-note" id="directoryCount"></span></div>
-      <p class="card-sub" id="directoryNotice" role="status">来自 WeRC 的好友目录，仅供查看。</p>
-      <div class="table-wrap"><table class="member-table"><thead><tr><th scope="col">昵称</th><th scope="col">备注</th><th scope="col">OneBot 用户 ID</th></tr></thead><tbody id="directoryBody"></tbody></table></div>
+      <div class="toolbar">
+        <select class="directory-category" id="directoryCategory" aria-label="通讯录类别" onchange="renderDirectory()"><option value="">全部类别</option></select>
+        <input class="search-input" id="directorySearch" placeholder="搜索名称、备注或标识" aria-label="搜索通讯录" oninput="renderDirectory()">
+        <div class="spacer"></div><span class="set-note" id="directoryCount"></span>
+      </div>
+      <p class="card-sub" id="directoryNotice" role="status">WeRC 本地通讯录，仅供查看。</p>
+      <div class="table-wrap"><table class="member-table"><thead><tr><th scope="col">类别</th><th scope="col">名称</th><th scope="col">备注</th><th scope="col">OneBot ID / 微信标识</th></tr></thead><tbody id="directoryBody"></tbody></table></div>
     </div>
   </div>
   <div class="members-sub" id="sub-friends">

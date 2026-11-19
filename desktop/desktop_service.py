@@ -65,10 +65,36 @@ def make_handler(key):
                 self.send_header('Content-Type',mime+'; charset=utf-8' if mime.startswith('text/') else mime)
                 self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)))
                 self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(body);return
-            if self.path == '/api/friend-directory':
-                from ob_protocol import read_friend_directory
+            if self.path == '/api/contact-directory':
+                from werc_adapter import WeRCError
                 try:
-                    self.send_json({'ok': True, 'friends': read_friend_directory()})
+                    if config.MESSAGE_SOURCE != 'werc':
+                        raise ValueError('分类通讯录需要 WeRC 接收源。')
+                    client = WeRC.from_config(config.config)
+                    try:
+                        rows = client.fetch_directory()
+                    except WeRCError as e:
+                        if e.status not in (401, 403, 404):
+                            raise
+                        from ob_protocol import read_friend_directory
+                        try:
+                            friends = read_friend_directory()
+                        except ValueError:
+                            raise ValueError('请更新 WeRC，并导入勾选了「允许读取分类通讯录」的令牌。') from None
+                        self.send_json({'ok': True, 'contacts': [dict(row, category='friend', identifier=row['user_id']) for row in friends], 'friend_only': True});return
+                    contacts = []
+                    for row in rows:
+                        if not isinstance(row, dict) or not isinstance(row.get('username'), str) or not row['username']:
+                            continue
+                        username = row['username']
+                        category = row.get('category')
+                        category = category if isinstance(category, str) else 'other'
+                        has_onebot_id = (category == 'group' and username.endswith('@chatroom')) or (
+                            category == 'friend' and not username.endswith(('@chatroom', '@im.chatroom')))
+                        contacts.append({'category': category, 'nickname': row.get('nickname') or '',
+                                         'remark': row.get('remark') or '',
+                                         'identifier': state._wxid_to_int(username) if has_onebot_id else username})
+                    self.send_json({'ok': True, 'contacts': contacts, 'friend_only': False})
                 except ValueError as e:
                     self.send_json({'ok': False, 'error': str(e)}, 400)
                 except OSError:

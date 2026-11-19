@@ -1,5 +1,9 @@
 # RCBridge 变更记录
 
+## 0.1.5 — 2026-11-19
+
+- `get_friend_list` 使用 WeRC 已授权的本地好友目录，沿用私聊消息的 OneBot ID。`get_group_list` 优先显示已同步的群名。
+
 ## 0.1.4 — 2026-11-19
 
 - 支持从已授权的 WeRC 一键同步群名，保留 JSON 导入；不改变 OneBot 群 ID 或回复权限。

@@ -88,6 +88,21 @@ class WeRC:
                 raise ValueError('请使用支持群名同步的 WeRC，并确认已绑定当前微信来源；也可手动导入 JSON。') from None
             raise
 
+    def fetch_friends(self):
+        try:
+            document = self.request('GET', 'contacts/friends', params={'account_id': self.account}).json()
+        except WeRCError as e:
+            if e.status in (401, 403):
+                raise ValueError('好友列表未授权：请在 WeRC 签发勾选了「允许读取好友列表」的令牌。') from None
+            if e.status == 404:
+                raise ValueError('好友目录不可用：需要支持好友列表的 WeRC，并绑定当前微信来源。旧版通讯录无法确认好友关系。') from None
+            raise
+        if (not isinstance(document, dict) or document.get('account_id') != self.account
+                or document.get('data_mode') != 'local_friend_directory'
+                or not isinstance(document.get('data'), list)):
+            raise ValueError('WeRC 未返回当前授权账号的好友目录。')
+        return document['data']
+
     def fetch_group_members(self, room):
         # No verified member identities in a native room envelope or contact snapshot.
         return []

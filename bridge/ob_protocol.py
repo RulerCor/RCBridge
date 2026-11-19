@@ -113,7 +113,8 @@ def _api_get_group_member_list(params: dict) -> list:
 
 def _api_get_group_list(_params: dict) -> list:
     out = []
-    for username, name in state.known_groups().items():
+    from people import _group_display_names
+    for username, name in _group_display_names().items():
         item = {"group_id": state._wxid_to_int(username), "group_name": name}
         count = state.member_count_of_group(username)
         if count:
@@ -123,8 +124,25 @@ def _api_get_group_list(_params: dict) -> list:
 
 
 def _api_get_friend_list(_params: dict) -> list:
-    # 微信侧好友列表未接入桥接，返回空（AstrBot 会自行降级）
-    return []
+    if config.MESSAGE_SOURCE != 'werc':
+        return []
+    from werc_adapter import WeRC
+    source = WeRC.from_config(config.config)
+    friends = {}
+    for row in source.fetch_friends():
+        if not isinstance(row, dict):
+            continue
+        username = row.get('username')
+        if (not isinstance(username, str) or not username or username != username.strip()
+                or username.endswith(('@chatroom', '@im.chatroom'))):
+            continue
+        nickname, remark = row.get('nickname'), row.get('remark')
+        friends[username] = {
+            'user_id': state._wxid_to_int(username),
+            'nickname': nickname if isinstance(nickname, str) else '',
+            'remark': remark if isinstance(remark, str) else '',
+        }
+    return list(friends.values())
 
 
 def _api_get_stranger_info(params: dict) -> dict:
@@ -394,10 +412,19 @@ async def _handle_ob_api(data: dict):
     handler = _READ_API.get(action)
     if handler is not None:
         try:
-            resp_data["data"] = handler(params)
-            log.debug(f"[OB11] {action} -> {json.dumps(resp_data['data'], ensure_ascii=False)[:200]}")
+            if action == 'get_friend_list':
+                resp_data['data'] = await asyncio.to_thread(handler, params)
+                log.debug('[OB11] get_friend_list -> %d entries', len(resp_data['data']))
+            else:
+                resp_data["data"] = handler(params)
+                log.debug(f"[OB11] {action} -> {json.dumps(resp_data['data'], ensure_ascii=False)[:200]}")
         except Exception as e:
-            log.warning(f"[OB11] {action} 查询失败: {e}")
+            if action == 'get_friend_list':
+                message = str(e) if isinstance(e, ValueError) else '无法读取 WeRC 好友目录。'
+                resp_data.update(status='failed', retcode=100, data=None, message=message)
+                log.warning('[OB11] get_friend_list 查询失败: %s', message)
+            else:
+                log.warning(f"[OB11] {action} 查询失败: {e}")
 
     # 先回响应（必须在处理消息前回，否则 AstrBot 超时）
     resp_sent = False

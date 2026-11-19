@@ -65,6 +65,15 @@ def make_handler(key):
                 self.send_header('Content-Type',mime+'; charset=utf-8' if mime.startswith('text/') else mime)
                 self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)))
                 self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(body);return
+            if self.path == '/api/friend-directory':
+                from ob_protocol import read_friend_directory
+                try:
+                    self.send_json({'ok': True, 'friends': read_friend_directory()})
+                except ValueError as e:
+                    self.send_json({'ok': False, 'error': str(e)}, 400)
+                except OSError:
+                    self.send_json({'ok': False, 'error': '无法连接 WeRC，请检查 API 服务后重试。'}, 503)
+                return
             if self.path == '/api/werc-outbox':
                 try:
                     client = WeRC.from_config(config.config)

@@ -1,5 +1,6 @@
 let peopleData = null, peopleDirty = false, refreshBusy = false;
 let admins = new Set(), friendChanges = new Map();
+let directoryRows = null, directoryBusy = false, membersSub = 'groups';
 const memberEl = id => document.getElementById(id);
 
 async function peopleRequest(path, data) {
@@ -12,11 +13,24 @@ async function peopleRequest(path, data) {
 }
 
 function switchMembersTab(name) {
-  if (name !== 'groups' && !peopleData?.astrbot_available) name = 'groups';
+  if (name === 'directory' ? !peopleData?.friend_directory
+      : name !== 'groups' && !peopleData?.astrbot_available) name = 'groups';
+  membersSub = name;
   document.querySelectorAll('#page-members .seg').forEach(b => b.classList.toggle('active', b.dataset.sub === name));
   document.querySelectorAll('#page-members .members-sub').forEach(p => p.classList.toggle('active', p.id === 'sub-' + name));
-  memberEl('peopleSaveBar').hidden = name === 'groups';
+  memberEl('peopleSaveBar').hidden = !['friends', 'admins'].includes(name);
+  updateMembersActions();
   history.replaceState(null, '', '#members/' + name);
+  if (name === 'directory' && directoryRows === null) refreshDirectory();
+}
+
+function updateMembersActions() {
+  const isDirectory = membersSub === 'directory';
+  memberEl('btnImportGroupNames').hidden = memberEl('btnSyncGroupNames').hidden = isDirectory || !peopleData?.group_name_import;
+  const busy = isDirectory ? directoryBusy : refreshBusy;
+  const btn = memberEl('btnRefreshPeople');
+  btn.disabled = busy;
+  btn.textContent = busy ? '刷新中…' : '刷新名单';
 }
 
 function loadPeopleData(d) {
@@ -27,11 +41,12 @@ function loadPeopleData(d) {
     admins = new Set(d.admins);
     friendChanges.clear();
     memberEl('fw_enable').checked = d.id_whitelist_enable;
-    document.querySelectorAll('#page-members .seg:not([data-sub="groups"])').forEach(el => { el.hidden = !d.astrbot_available; });
+    document.querySelectorAll('#page-members .seg[data-sub="friends"], #page-members .seg[data-sub="admins"]').forEach(el => { el.hidden = !d.astrbot_available; });
     memberEl('membersBadge').textContent = d.astrbot_available ? 'AstrBot 权限' : d.astrbot_enabled ? 'AstrBot 配置不可用' : '群回复即时生效';
     renderFriends(); renderAdmins();
   }
-  memberEl('btnImportGroupNames').hidden = memberEl('btnSyncGroupNames').hidden = !d.group_name_import;
+  document.querySelector('#page-members .seg[data-sub="directory"]').hidden = !d.friend_directory;
+  updateMembersActions();
   renderGroups();
 }
 
@@ -39,16 +54,54 @@ async function switchTabMembers() {
   try {
     loadPeopleData(await peopleRequest('/api/people'));
     const sub = location.hash.split('/')[1];
-    switchMembersTab(['friends', 'admins'].includes(sub) ? sub : 'groups');
-    await refreshPeople();
+    switchMembersTab(['directory', 'friends', 'admins'].includes(sub) ? sub : 'groups');
+    if (membersSub !== 'directory') await refreshPeople();
   } catch (e) { memberEl('membersBadge').textContent = e.message; }
+}
+
+function refreshMembersView() {
+  return membersSub === 'directory' ? refreshDirectory() : refreshPeople();
+}
+
+async function refreshDirectory() {
+  if (directoryBusy) return;
+  directoryBusy = true;
+  updateMembersActions();
+  const notice = memberEl('directoryNotice');
+  notice.textContent = '正在读取 WeRC 好友目录…';
+  try {
+    const data = await peopleRequest('/api/friend-directory');
+    directoryRows = data.friends;
+    notice.textContent = '来自 WeRC 的好友目录，仅供查看。';
+  } catch (e) {
+    directoryRows = null;
+    notice.textContent = e.message;
+  } finally {
+    directoryBusy = false;
+    updateMembersActions();
+    renderDirectory();
+  }
+}
+
+function renderDirectory() {
+  const body = memberEl('directoryBody'), count = memberEl('directoryCount');
+  if (directoryRows === null) {
+    body.innerHTML = '';
+    count.textContent = '';
+    return;
+  }
+  const query = memberEl('directorySearch').value.trim().toLowerCase();
+  const rows = directoryRows.filter(f => [f.nickname, f.remark, f.user_id].some(v => String(v).toLowerCase().includes(query)));
+  count.textContent = query ? `${rows.length} / ${directoryRows.length} 位好友` : `${rows.length} 位好友`;
+  body.innerHTML = rows.map(f => `<tr><td>${esc(f.nickname || '—')}</td><td>${esc(f.remark || '—')}</td><td>${esc(f.user_id)}</td></tr>`).join('')
+    || `<tr><td colspan="3">${query ? '没有匹配的好友。' : 'WeRC 本地通讯录没有可显示的好友。'}</td></tr>`;
 }
 
 async function refreshPeople() {
   if (refreshBusy) return;
   refreshBusy = true;
-  const btn = memberEl('btnRefreshPeople'), notice = memberEl('groupNotice');
-  btn.disabled = true; btn.textContent = '刷新中…';
+  const notice = memberEl('groupNotice');
+  updateMembersActions();
   notice.textContent = '';
   try {
     let failure;
@@ -58,7 +111,8 @@ async function refreshPeople() {
   } catch (e) {
     notice.textContent = '刷新失败：' + e.message;
   } finally {
-    refreshBusy = false; btn.disabled = false; btn.textContent = '刷新名单';
+    refreshBusy = false;
+    updateMembersActions();
   }
 }
 

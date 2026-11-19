@@ -79,6 +79,21 @@ def run(bundle):
             refresh = Request(base+'/api/refresh-people', data=b'{}', headers=headers, method='POST')
             assert json.load(opener.open(refresh, timeout=5))['groups'] == 1
             people=json.load(opener.open(Request(base+'/api/people',headers=headers),timeout=3));assert not people['astrbot_enabled']
+            assert people['friend_directory'] and not people['astrbot_available']
+            page = opener.open(Request(base+'/', headers=headers), timeout=3).read().decode('utf-8')
+            assert 'data-sub="directory"' in page and 'id="directoryBody"' in page
+            try: opener.open(base+'/api/friend-directory', timeout=3)
+            except HTTPError as e: assert e.code == 403
+            else: raise AssertionError('Unprotected desktop friend directory')
+            directory_req = Request(base+'/api/friend-directory', headers=headers)
+            desktop_friends = json.load(opener.open(directory_req, timeout=5))['friends']
+            assert {row['nickname'] for row in desktop_friends} == {'Test friend', 'Quiet friend'}
+            assert next(row['remark'] for row in desktop_friends if row['nickname']=='Test friend') == 'Test remark'
+            friend_response['account_id'] = 'different-account'
+            try: opener.open(directory_req, timeout=5)
+            except HTTPError as e: assert e.code == 400
+            else: raise AssertionError('Desktop friend directory accepted another account')
+            friend_response['account_id'] = 'test-account'
             assert [(g['session'], g['name']) for g in people['groups']] == [('sample@chatroom', 'sample@chatroom')]
             previous_id = people['groups'][0]['gid']
             def contact(username, nickname, remark=None, deleted=0):

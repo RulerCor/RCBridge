@@ -123,7 +123,7 @@ def _api_get_group_list(_params: dict) -> list:
     return out
 
 
-def _api_get_friend_list(_params: dict) -> list:
+def read_friend_directory() -> list:
     if config.MESSAGE_SOURCE != 'werc':
         return []
     from werc_adapter import WeRC
@@ -143,6 +143,10 @@ def _api_get_friend_list(_params: dict) -> list:
             'remark': remark if isinstance(remark, str) else '',
         }
     return list(friends.values())
+
+
+def _api_get_friend_list(_params: dict) -> list:
+    return read_friend_directory()
 
 
 def _api_get_stranger_info(params: dict) -> dict:

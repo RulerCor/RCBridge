@@ -1,5 +1,9 @@
 # RCBridge 变更记录
 
+## 0.1.6 — 2026-11-19
+
+- 「成员与权限」新增独立的 WeRC 好友页，可查看并搜索昵称、备注、OneBot 用户 ID，不需要配置 AstrBot。
+
 ## 0.1.5 — 2026-11-19
 
 - `get_friend_list` 使用 WeRC 已授权的本地好友目录，沿用私聊消息的 OneBot ID。`get_group_list` 优先显示已同步的群名。

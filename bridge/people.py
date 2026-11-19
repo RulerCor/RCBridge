@@ -589,6 +589,7 @@ def read_overview() -> dict:
         "persons": persons,
         "groups": groups,
         "group_name_import": bool(group_account),
+        "friend_directory": config.MESSAGE_SOURCE == "werc",
         "humanizer": {
             "available": astrbot_ok and bool(humanizer_styles),
             "global_style": global_style,

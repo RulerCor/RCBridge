@@ -1,0 +1,10 @@
+/toolchain/
+/archives/
+/dist/
+/build/
+/.venv/
+__pycache__/
+*.py[cod]
+*.log
+config.json
+/bridge/data/

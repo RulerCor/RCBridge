@@ -52,10 +52,33 @@ def run(bundle):
             assert json.load(opener.open(refresh, timeout=5))['groups'] == 1
             people=json.load(opener.open(Request(base+'/api/people',headers=headers),timeout=3));assert not people['astrbot_enabled']
             assert [(g['session'], g['name']) for g in people['groups']] == [('sample@chatroom', 'sample@chatroom')]
+            previous_id = people['groups'][0]['gid']
+            def contact(username, nickname, remark=None, deleted=0):
+                return {'record_type':'contact','record':{'anchor':{'username':username},
+                        'nickname':nickname,'remark':remark,'delete_flag':deleted}}
+            directory = {'schema_version':1,'account_id':'test-account', 'data_mode':'local_directory_cache',
+                         'selection':{'kind':'contacts'},'rows':[
+                             contact('sample@chatroom', 'Default title', 'Real group title'),
+                             contact('other@chatroom', 'Second group'),
+                             contact('deleted@chatroom', 'Deleted group', deleted=1),
+                             contact('friend', 'Private contact'),
+                         ]}
+            def import_names(document):
+                request = Request(base+'/api/group-names/import', data=json.dumps(document).encode(), headers=headers)
+                return json.load(opener.open(request, timeout=5))
+            try: import_names(dict(directory, account_id='different-account'))
+            except HTTPError as e: assert e.code == 400
+            else: raise AssertionError('Imported another WeRC account')
+            assert import_names(directory)['imported'] == 2
+            roster = json.load(opener.open(Request(base+'/api/people',headers=headers),timeout=3))['groups']
+            assert {g['session']:g['name'] for g in roster} == {'sample@chatroom':'Real group title','other@chatroom':'Second group'}
+            assert next(g['gid'] for g in roster if g['session']=='sample@chatroom') == previous_id
+            saved_names = json.loads((Path(tmp)/'data/werc_group_names.json').read_text('utf8'))
+            assert saved_names == {'test-account':{'sample@chatroom':'Real group title','other@chatroom':'Second group'}}
             assert not sent  # discovery before starting never forwards or sends an observation
             toggle = Request(base+'/api/session-toggle', data=b'{"session":"sample@chatroom","muted":true}', headers=headers, method='POST')
             assert json.load(opener.open(toggle, timeout=3))['muted']
-            assert json.load(opener.open(Request(base+'/api/people', headers=headers), timeout=3))['groups'][0]['muted']
+            assert any(g['session']=='sample@chatroom' and g['muted'] for g in json.load(opener.open(Request(base+'/api/people', headers=headers), timeout=3))['groups'])
             try:opener.open(Request(base+'/api/astrbot-restart',headers=headers,method='POST'),timeout=3)
             except HTTPError as e:assert e.code==409
             else:raise AssertionError('generic mode allowed AstrBot restart')

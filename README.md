@@ -14,7 +14,7 @@ RCBridge 是一个 Windows 桌面桥接工具：通过 WeRC 接收微信消息�
 | 微信接入 | 推荐用 WeRC：接收原生入站消息，支持发送文本、图片、文件、视频和语音（取决于 WeRC 接受的格式和授权范围）。也可配置 Alpha 或 WeFlow 为接收源，或选择 Windows UIA 发送；这些是独立的接入路径，能力不完全相同。 |
 | 机器人接入 | OneBot v11 **反向 WebSocket**：RCBridge 主动连接下游应用提供的地址。通用模式不依赖 AstrBot；配置 AstrBot 后可使用其成员权限同步和重启功能。 |
 
-桌面端提供启停、运行日志和群回复开关。群名单来自联系人快照和近期原生观测，不是完整通讯录。
+桌面端提供启停、运行日志和群回复开关。群名单来自联系人快照和近期原生观测，不是完整通讯录。可导入 WeRC 通讯录 JSON，在群 ID 旁显示群名。
 
 ### 快速开始
 
@@ -36,7 +36,7 @@ RCBridge is a Windows desktop bridge. It receives WeChat messages through WeRC, 
 | WeChat | WeRC is recommended for native inbound messages and sending text, images, files, video, and audio, subject to WeRC permissions and accepted formats. Alpha and WeFlow are alternative receive sources, and Windows UI Automation is an alternative send method. These paths have different capabilities. |
 | Bots | OneBot v11 over **reverse WebSocket**: RCBridge connects to the endpoint exposed by the downstream app. AstrBot is optional and enables additional member-permission sync and restart controls when configured. |
 
-The desktop app provides start/stop controls, logs, and per-group reply controls. The roster lists known groups from a contact snapshot and recent observations, not the full address book.
+The desktop app provides start/stop controls, logs, and per-group reply controls. The roster lists known groups from a contact snapshot and recent observations, not the full address book. Import a WeRC directory JSON to display group names alongside their IDs.
 
 ### Quick start
 

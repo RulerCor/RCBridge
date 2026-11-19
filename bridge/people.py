@@ -443,6 +443,64 @@ def write_friend_whitelist(uids):
     log.info(f"🔑 私聊白名单已写入 AstrBot：{old} -> {final}（重启 AstrBot 后生效）")
     return True, f"已保存 {len(final)} 条（原 {len(old)} 条）"
 
+GROUP_NAMES_FILE = os.path.join(DATA_DIR, 'werc_group_names.json')
+
+
+def _group_directory_account():
+    return config.config.get('werc_account_id', '') if config.MESSAGE_SOURCE == 'werc' else ''
+
+
+def _imported_group_names(account):
+    if not account:
+        return {}
+    saved = _read_json_file(GROUP_NAMES_FILE, {})
+    names = saved.get(account) if isinstance(saved, dict) else None
+    return names if isinstance(names, dict) else {}
+
+
+def _group_display_names():
+    return {**state.known_groups(), **_imported_group_names(_group_directory_account())}
+
+
+def import_werc_group_names(document):
+    """Import only group titles, from the current account's WeRC directory export."""
+    account = _group_directory_account()
+    if not account:
+        raise ValueError('请先保存 WeRC 授权并重新打开 RCBridge。')
+    if (not isinstance(document, dict) or document.get('schema_version') != 1
+            or document.get('data_mode') != 'local_directory_cache'
+            or not isinstance(document.get('selection'), dict)
+            or document['selection'].get('kind') != 'contacts'
+            or not isinstance(document.get('rows'), list)):
+        raise ValueError('请选择 WeRC「导出通讯录」生成的 JSON，不是群成员或聊天记录。')
+    if document.get('account_id') != account:
+        raise ValueError('这个通讯录文件的账号与当前 WeRC 授权不一致。')
+    groups = {}
+    for row in document['rows']:
+        if not isinstance(row, dict) or row.get('record_type') != 'contact':
+            continue
+        record = row.get('record') or {}
+        if not isinstance(record, dict) or record.get('delete_flag') not in (None, 0):
+            continue
+        anchor = record.get('anchor') or {}
+        room = anchor.get('username') if isinstance(anchor, dict) else None
+        if not isinstance(room, str) or not room.endswith('@chatroom'):
+            continue
+        for value in (record.get('remark'), record.get('nickname')):
+            if isinstance(value, str) and value.strip() and value.strip() != room:
+                groups[room] = value.strip()
+                break
+    if not groups:
+        raise ValueError('文件中没有带名称的微信群，请在导出时选择「群聊」。')
+    saved = _read_json_file(GROUP_NAMES_FILE, {})
+    if not isinstance(saved, dict):
+        saved = {}
+    previous = saved.get(account)
+    saved[account] = {**(previous if isinstance(previous, dict) else {}), **groups}
+    _write_json_atomic(GROUP_NAMES_FILE, saved)
+    return len(groups)
+
+
 def read_overview() -> dict:
     """面板「成员与权限」页所需的一切数据。"""
     admins = set(load_admins())
@@ -472,7 +530,8 @@ def read_overview() -> dict:
     ltm = (cfg.get("provider_ltm_settings") or {}).get("active_reply") or {}
     groups = []
     pid = _platform_id(cfg) if astrbot_ok else "wechat_bridge"
-    for session, name in sorted(state.known_groups().items(), key=lambda kv: kv[1]):
+    group_account = _group_directory_account()
+    for session, name in sorted(_group_display_names().items(), key=lambda kv: (kv[0] == kv[1], kv[1], kv[0])):
         gid = state._wxid_to_int(session)
         groups.append({
             "session": session,
@@ -513,6 +572,7 @@ def read_overview() -> dict:
         "astrbot_error": "" if astrbot_ok else cfg_err,
         "persons": persons,
         "groups": groups,
+        "group_name_import": bool(group_account),
         "humanizer": {
             "available": astrbot_ok and bool(humanizer_styles),
             "global_style": global_style,
@@ -558,10 +618,9 @@ def normalize_whitelist_entries(entries) -> list:
     """
     group_ids = set()
     try:
-        import state as _st
-        for sess in _st.known_groups():
+        for sess in _group_display_names():
             try:
-                group_ids.add(str(_st._wxid_to_int(sess)))
+                group_ids.add(str(state._wxid_to_int(sess)))
             except Exception:
                 continue
     except Exception:

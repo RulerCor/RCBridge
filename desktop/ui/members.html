@@ -7,13 +7,17 @@
     <button class="seg active" data-sub="groups" onclick="switchMembersTab('groups')">群聊</button>
     <button class="seg" data-sub="friends" onclick="switchMembersTab('friends')" hidden>私聊</button>
     <button class="seg" data-sub="admins" onclick="switchMembersTab('admins')" hidden>管理员</button>
-    <div class="spacer"></div><button id="btnRefreshPeople" onclick="refreshPeople()">刷新名单</button>
+    <div class="spacer"></div>
+    <button id="btnImportGroupNames" hidden onclick="memberEl('groupNamesFile').click()" title="选择 WeRC 导出的通讯录 JSON">导入群名</button>
+    <input id="groupNamesFile" type="file" accept=".json,application/json" hidden onchange="importGroupNames(this)">
+    <button id="btnRefreshPeople" onclick="refreshPeople()">刷新名单</button>
   </div>
   <div class="members-sub active" id="sub-groups">
     <div class="card">
       <div class="toolbar"><input class="search-input" id="groupSearch" placeholder="搜索群名或 ID" aria-label="搜索群聊" oninput="renderGroups()"><div class="spacer"></div><span class="set-note" id="groupCount"></span></div>
+      <p class="card-sub" id="groupNameHint" hidden>缺少群名时：在 WeRC 导出「群聊」通讯录 JSON，再导入。</p>
       <p class="card-sub" id="groupNotice" role="status"></p>
-      <table class="member-table"><thead><tr><th>回复</th><th>群聊</th><th>OneBot 群 ID</th></tr></thead><tbody id="groupsBody"><tr><td colspan="3">加载中…</td></tr></tbody></table>
+      <table class="member-table"><thead><tr><th>回复</th><th>群名</th><th>OneBot 群 ID</th></tr></thead><tbody id="groupsBody"><tr><td colspan="3">加载中…</td></tr></tbody></table>
     </div>
   </div>
   <div class="members-sub" id="sub-friends">

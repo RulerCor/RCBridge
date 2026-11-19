@@ -87,6 +87,18 @@ def make_handler(key):
                     if not 0 < count < 16384: raise ValueError('配置长度无效')
                     candidate = WeRC.from_config(json.loads(self.rfile.read(count)))
                     ok, _, msg = candidate.check();self.send_json({'ok':ok,'message':msg});return
+                if self.path == '/api/group-names/import':
+                    from people import import_werc_group_names
+                    count = int(self.headers.get('Content-Length', 0))
+                    if not 0 < count <= 32 * 1024 * 1024:
+                        raise ValueError('请选择不超过 32 MB 的 WeRC 通讯录 JSON。')
+                    try:
+                        document = json.loads(self.rfile.read(count).decode('utf-8-sig'))
+                    except (ValueError, UnicodeError):
+                        raise ValueError('文件不是有效的通讯录 JSON。') from None
+                    with self.server.edit_lock:
+                        imported = import_werc_group_names(document)
+                    self.send_json({'ok': True, 'imported': imported});return
                 with self.server.edit_lock: super().do_POST()
             except (ValueError,OSError,KeyError) as e: self.send_json({'ok':False,'error':str(e)},400)
     return Panel

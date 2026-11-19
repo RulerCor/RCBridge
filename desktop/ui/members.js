@@ -31,6 +31,7 @@ function loadPeopleData(d) {
     memberEl('membersBadge').textContent = d.astrbot_available ? 'AstrBot 权限' : d.astrbot_enabled ? 'AstrBot 配置不可用' : '群回复即时生效';
     renderFriends(); renderAdmins();
   }
+  memberEl('btnImportGroupNames').hidden = !d.group_name_import;
   renderGroups();
 }
 
@@ -61,15 +62,34 @@ async function refreshPeople() {
   }
 }
 
+async function importGroupNames(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const btn = memberEl('btnImportGroupNames');
+  btn.disabled = true;
+  try {
+    if (!file.size || file.size > 32 * 1024 * 1024) throw Error('请选择不超过 32 MB 的通讯录 JSON。');
+    const r = await fetch('/api/group-names/import', {method:'POST', headers:{'Content-Type':'application/json'}, body:file});
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw Error(d.error || '导入失败');
+    loadPeopleData(await peopleRequest('/api/people'));
+    toast(`已导入 ${d.imported} 个群名。`, 'success');
+  } catch (e) { toast(e.message, 'error'); }
+  finally { btn.disabled = false; }
+}
+
 function renderGroups() {
   if (!peopleData) return;
   const query = memberEl('groupSearch').value.trim().toLowerCase();
   const groups = peopleData.groups;
+  memberEl('groupNameHint').hidden = memberEl('btnImportGroupNames').hidden || !groups.some(g => g.name === g.session);
   const shown = groups.filter(g => [g.name, g.session, g.gid].some(v => String(v).toLowerCase().includes(query)));
   memberEl('groupCount').textContent = query ? `${shown.length} / ${groups.length} 个已知群` : `${groups.length} 个已知群`;
   memberEl('groupsBody').innerHTML = shown.map(g => '<tr>'
     + '<td><input type="checkbox" aria-label="允许回复" data-session="' + esc(g.session) + '"' + (g.muted ? '' : ' checked') + ' onchange="toggleMute(this)"></td>'
-    + '<td>' + esc(g.name) + '</td><td>' + esc(g.gid) + '</td></tr>').join('')
+    + '<td title="' + esc(g.session) + '">' + (g.name === g.session ? '未获取群名<br><small>' + esc(g.session) + '</small>' : esc(g.name))
+    + '</td><td>' + esc(g.gid) + '</td></tr>').join('')
     || '<tr><td colspan="3">' + (query ? '没有匹配的群。' : '暂无已知群。让群成员发一条新消息，再刷新名单。') + '</td></tr>';
 }
 

@@ -81,33 +81,33 @@ def _resolve_display_name(raw: str, fallback_contact: str = "") -> str:
 
 
 def refresh_contact_names() -> tuple:
-    """从 WeFlow /api/v1/contacts 全量刷新 联系人/群 → 显示名 缓存。
-
-    返回 (本次新增条数, 缓存总条数, 错误信息或空串)。
-
-    为什么是模块级函数而不是只放在 WeFlowBridge 里（2026-10-07）：
-      ① 面板「成员与权限」的 /api/refresh-people 要在**桥接未启动**时也能
-         拉新群 —— 用户把 bot 拉进新群后立刻打开面板，就该看到它；
-      ② 后台 10 分钟名册刷新循环先调它，捕捉「启动后新加入的群」。
-      以前只有启动时拉一次 contacts，新群若一直没人发言就永远进不了
-      known_groups()，面板「群里管什么」表也就永远不出现这个群（用户报障）。
-    """
+    """Return (changes, cached names, error); retain previously known groups."""
+    n = 0
     try:
-        # WeFlow/Alpha 的分页、鉴权、字段差异统一封在 message_source。
-        items = create_message_source().fetch_contacts()
+        source = create_message_source()
+        error = ''
+        if source.name == 'werc':
+            try:
+                n += state.note_observed_groups(source.recent_groups())
+            except (ValueError, KeyError, requests.RequestException) as e:
+                error = str(e)
+        try:
+            items = source.fetch_contacts()
+        except (ValueError, KeyError, requests.RequestException):
+            # Native observations don't require the optional contacts:read scope.
+            if source.name != 'werc' or error:
+                raise
+            items = []
         if isinstance(items, dict):
-            items = items.get("contacts") or items.get("items") or []
-        n = 0
+            items = items.get('contacts') or items.get('items') or []
         for it in items or []:
-            if not isinstance(it, dict):
-                continue
-            username = it.get("username", "")
-            name = it.get("displayName") or it.get("nickname") or ""
-            if state.set_chat_name(username, name):
+            if isinstance(it, dict) and state.set_chat_name(
+                it.get('username', ''), it.get('displayName') or it.get('nickname') or ''
+            ):
                 n += 1
-        return n, len(state.all_chat_names()), ""
+        return n, len(state.all_chat_names()), error
     except Exception as e:
-        return 0, len(state.all_chat_names()), str(e)
+        return n, len(state.all_chat_names()), str(e)
 
 
 # ============ 桥接核心 ============
@@ -281,9 +281,11 @@ class WeFlowBridge:
         user_id 从而与私聊一致 —— AstrBot 的管理员列表加一次就处处生效。
         每 10 分钟自动刷新一次，捕捉进群/退群/改昵称。
         """
-        rooms = list(state.known_groups().keys())
-        ok = 0
         source = create_message_source()
+        if source.name == 'werc':
+            return  # Native group envelopes do not identify group members.
+        rooms = list(state.known_groups())
+        ok = 0
         for room in rooms:
             try:
                 members = source.fetch_group_members(room)

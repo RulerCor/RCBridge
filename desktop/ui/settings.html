@@ -1,25 +1,16 @@
-  <div class="tab-page" id="page-settings">
-    <div class="header">
-      <h1><span class="en">Settings</span><span class="cn">基础设置</span></h1>
-      <div class="badge">config.json</div>
-      <span class="sub">改完记得重新打开桌面端才生效（群聊模式除外，立即生效）</span>
-    </div>
-
-    <details class="tier"><summary>从 WeRC 导入 Bot 接入配置</summary><p>在 WeRC「Bot 接入」复制 JSON 并粘贴。只使用本机 API、账号和令牌；点击保存后才写入本机。</p><textarea id="wercBundle" rows="3" autocomplete="off" spellcheck="false" aria-label="WeRC 接入 JSON"></textarea><button onclick="importWeRC()">填入连接设置</button> <button onclick="testWeRC()">只读测试连接</button></details>
-    <div class="set-bar">
-      <input class="search-input" id="cfgSearch" placeholder=" 搜设置项，比如：图片 / 昵称 / 端口 / Token" oninput="filterSettings()">
-      <span class="set-note" id="cfgSearchCount"></span>
-    </div>
-
-    <div class="settings-scroll" id="settingsForm">
-      <!-- 由 JS 动态渲染 -->
-    </div>
-
-    <div class="save-bar">
-      <span class="save-msg" id="saveMsg">✅ 已保存</span>
-      <span class="set-note"> 保存后<b style="color:#b9802b">重新打开桌面端</b>生效；群聊模式改动立即生效</span>
-      <div class="spacer"></div>
-      <button class="btn btn-pink" onclick="saveConfig()"> 保存配置</button>
-    </div>
+<div class="tab-page" id="page-settings">
+  <div class="header"><h1><span class="en">Settings</span><span class="cn">连接设置</span></h1></div>
+  <div class="card">
+    <h3>WeRC</h3>
+    <p class="card-sub">在 WeRC 的「Bot 接入」复制配置，粘贴到这里。</p>
+    <textarea id="wercBundle" rows="2" autocomplete="off" spellcheck="false" aria-label="WeRC 接入配置"></textarea>
+    <div class="toolbar"><button id="importWeRCBtn" onclick="importWeRC()" disabled>导入配置</button><button id="testWeRCBtn" onclick="testWeRC()" disabled>测试连接</button></div>
+    <details class="tier"><summary>手动填写 WeRC 授权</summary><div id="wercFields" class="form-grid tier-body"></div></details>
   </div>
-
+  <div class="card"><h3>OneBot v11</h3><div id="onebotFields" class="form-grid settings-row"></div></div>
+  <details class="tier">
+    <summary>其他接入与端口</summary>
+    <div id="advancedFields" class="form-grid tier-body"></div>
+  </details>
+  <div class="save-bar"><button class="primary" id="saveConfigBtn" onclick="saveConfig()" disabled>保存</button><span class="sub" id="settingsHint">保存后重新打开 RCBridge。</span></div>
+</div>

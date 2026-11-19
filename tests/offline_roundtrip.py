@@ -17,8 +17,12 @@ def run(bundle):
         def do_GET(self):
             assert self.headers['Authorization']=='Bearer demo'
             if self.path.startswith('/api/v1/messages/native/stream?'):
-                assert self.headers['Last-Event-ID']=='0';connected.wait(4);self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers();self.wfile.write(('event: message.received\nid: 7\ndata: '+json.dumps(row())+'\n\n').encode());self.wfile.flush();return
-            if self.path.startswith('/api/v1/messages/native?'):self.reply({'data_mode':'native_observations','data':[],'next_cursor':0})
+                assert self.headers['Last-Event-ID']=='7';connected.wait(4);self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers();self.wfile.write(('event: message.received\nid: 8\ndata: '+json.dumps(dict(row(), position=8))+'\n\n').encode());self.wfile.flush();return
+            if self.path.startswith('/api/v1/messages/native?'):
+                # Discovery sees a known group while the imported contact snapshot is empty.
+                data = [row('sample@chatroom', type_=43)]
+                pos = 7 if data else 0
+                self.reply({'data_mode':'native_observations','data':data,'next_cursor':pos})
             elif self.path.startswith('/api/v1/contacts?'):self.reply({'data':[]})
             else:self.send_error(404)
         def do_POST(self):
@@ -44,7 +48,14 @@ def run(bundle):
             line=proc.stdout.readline();assert line.startswith('RCBRIDGE_READY'),line
             req=Request('http://127.0.0.1:'+line.split()[1]+'/start',method='POST',headers={'X-RCBridge-Session':key});opener=build_opener(ProxyHandler({}));
             base=req.full_url.rsplit('/',1)[0]; headers={'X-RCBridge-Session':key}
+            refresh = Request(base+'/api/refresh-people', data=b'{}', headers=headers, method='POST')
+            assert json.load(opener.open(refresh, timeout=5))['groups'] == 1
             people=json.load(opener.open(Request(base+'/api/people',headers=headers),timeout=3));assert not people['astrbot_enabled']
+            assert [(g['session'], g['name']) for g in people['groups']] == [('sample@chatroom', 'sample@chatroom')]
+            assert not sent  # discovery before starting never forwards or sends an observation
+            toggle = Request(base+'/api/session-toggle', data=b'{"session":"sample@chatroom","muted":true}', headers=headers, method='POST')
+            assert json.load(opener.open(toggle, timeout=3))['muted']
+            assert json.load(opener.open(Request(base+'/api/people', headers=headers), timeout=3))['groups'][0]['muted']
             try:opener.open(Request(base+'/api/astrbot-restart',headers=headers,method='POST'),timeout=3)
             except HTTPError as e:assert e.code==409
             else:raise AssertionError('generic mode allowed AstrBot restart')

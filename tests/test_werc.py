@@ -29,6 +29,22 @@ class Contract(unittest.TestCase):
     def test_reject_ambiguous_and_self_and_wrong_scope(self):
         for patch in [{'route':None},{'schema_version':1},{'account_id':'other'},{'route':{'sender':'me','receiver':'friend','conversation':'friend'}}]:
             d=row();d['payload'].update(patch);self.assertIsNone(self.w.event(d,lambda _:None))
+    def test_group_discovery_reads_metadata_without_forwarding_messages(self):
+        a = row('first@chatroom', type_=43)  # a video still identifies the group
+        b = row('second@chatroom')
+        foreign = row('foreign@chatroom')
+        foreign['payload']['account_id'] = 'different-account'
+        ambiguous = row('unknown@chatroom')
+        ambiguous['payload']['route'] = None
+        self.w.page = Mock(side_effect=[
+            {'data': [b], 'next_cursor': 350},
+            {'data': [a, foreign, ambiguous, row()], 'next_cursor': 151},
+            {'data': [a, b], 'next_cursor': 350},
+        ])
+        self.assertEqual(self.w.recent_groups(), {'first@chatroom', 'second@chatroom'})
+        self.assertEqual([c.args for c in self.w.page.call_args_list], [(-1, 1), (50,), (151,)])
+        self.w.request.assert_not_called()
+
     def test_inbound_image(self):self.assertEqual(self.w.event(row(type_=3),lambda _:None)['_alphaMediaUrl'],'werc-image:7')
     def test_sse(self):
         frame=[': keep-alive','','event: receive.status','data: {"gaps":0}','','event: message.received','id: 7','data: '+json.dumps(row()),''];self.assertEqual(list(sse_events(frame)),[('receive.status',{'gaps':0}),('message.received',row())])

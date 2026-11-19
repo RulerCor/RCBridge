@@ -310,7 +310,7 @@ def _display_name_for_session(umo: str) -> str:
                     if str(state._wxid_to_int(sess)) == str(sid):
                         session, nm0 = sess, nm
                         name = nm0
-                        return name if name else ""
+                        return name if name and name != sess else ""
                 except Exception:
                     continue
         if session:

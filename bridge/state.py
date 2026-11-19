@@ -85,7 +85,7 @@ def get_contact(ob_id, default=None):
     # ① 群：chatroom 的整数 ID → 群名
     for room, name in known_groups().items():
         try:
-            if _wxid_to_int(room) == want and name:
+            if _wxid_to_int(room) == want and name and name != room:
                 return name
         except Exception:
             continue
@@ -173,11 +173,22 @@ def get_group_members(group_id) -> dict:
         return dict(_group_members.get(group_id, {}))
 
 
-def known_groups() -> dict:
-    """取联系人缓存里所有群会话 {微信 username: 显示名}。"""
+_observed_groups: set[str] = set()  # WeRC observations for this running account
+
+
+def note_observed_groups(rooms) -> int:
     with _api_lock:
-        names = dict(_chat_names)
-    return {k: v for k, v in names.items() if "@chatroom" in k}
+        new = set(rooms) - _observed_groups
+        _observed_groups.update(new)
+        return sum(room not in _chat_names for room in new)
+
+
+def known_groups() -> dict:
+    """Known group sessions, even when the source has no display name."""
+    with _api_lock:
+        groups = {room: room for room in _observed_groups}
+        groups.update((k, v) for k, v in _chat_names.items() if k.endswith('@chatroom'))
+    return groups
 
 
 def all_chat_names() -> dict:
@@ -410,10 +421,11 @@ def set_chat_name(username: str, name: str) -> bool:
     if not username or _is_bad_name(name):
         return False
     name = name.strip()
-    if _chat_names.get(username) != name:
-        _chat_names[username] = name
-        _save_chat_names()
-        return True
+    with _api_lock:
+        if _chat_names.get(username) != name:
+            _chat_names[username] = name
+            _save_chat_names()
+            return True
     return False
 
 

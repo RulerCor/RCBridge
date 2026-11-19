@@ -79,10 +79,39 @@ class WeRC:
     def fetch_messages(self, *a, **kw):
         return {'messages': []}  # Never substitute snapshot history for native observations.
 
+    def native_peer(self, row):
+        p = row.get('payload') or {}
+        route = p.get('route') or {}
+        peer, me = p.get('target_id'), p.get('sender_id')
+        if (p.get('account_id') == self.account and p.get('schema_version') == 3
+                and isinstance(peer, str) and peer and me and peer != me
+                and route.get('sender') == peer and route.get('receiver') == me
+                and route.get('conversation') == peer):
+            return peer
+        return ''
+
+    def recent_groups(self):
+        # Inspect a bounded window of observations, without forwarding old messages.
+        head = self.page(-1, 1)['next_cursor']
+        after = max(0, head - 300)
+        rooms = set()
+        while after < head:
+            page = self.page(after)
+            for row in page['data']:
+                peer = self.native_peer(row)
+                if peer.endswith('@chatroom'):
+                    rooms.add(peer)
+            next_pos = page['next_cursor']
+            if next_pos <= after:
+                break
+            after = next_pos
+        return rooms
+
     def event(self, row, name_of):
-        p = row['payload']; route = p.get('route') or {}; peer = p['target_id']; me = p['sender_id']
-        if p['account_id'] != self.account or p.get('schema_version') != 3 or not peer or peer == me or route.get('sender') != peer or route.get('receiver') != me or route.get('conversation') != peer:
+        peer = self.native_peer(row)
+        if not peer:
             return None
+        p = row['payload']
         room = peer.endswith('@chatroom'); msg = p['message']; kind = msg.get('message_type', 1)
         card = row.get('card') or {}; text = msg.get('text', '')
         if kind == 3: text = '[图片]'
@@ -129,6 +158,9 @@ class WeRC:
                     if kind != 'message.received': continue
                     pos = int(body['position'])
                     if pos <= bridge.werc_cursor: continue
+                    peer = self.native_peer(body)
+                    if peer.endswith('@chatroom'):
+                        state.note_observed_groups((peer,))
                     event = self.event(body, state.get_chat_name)
                     if event and not state.paused.is_set() and not bridge.ignore_reason(event): bridge.add_to_buffer(event)
                     bridge.werc_cursor = pos

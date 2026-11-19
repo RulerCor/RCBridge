@@ -1,161 +1,39 @@
 <div class="tab-page" id="page-members">
-    <div class="header">
-      <h1><span class="en">People</span><span class="cn">成员与权限</span></h1>
-      <div class="badge" id="membersBadge">加载中...</div>
-    </div>
-
-    <div class="seg-bar">
-      <button class="seg active" data-sub="groups" onclick="switchMembersTab('groups')"> 群聊</button>
-      <button class="seg" data-sub="friends" onclick="switchMembersTab('friends')"> 私聊</button>
-      <button class="seg" data-sub="styles" onclick="switchMembersTab('styles')"> 风格</button>
-      <button class="seg" data-sub="admins" onclick="switchMembersTab('admins')"> 管理员</button>
-      <div class="spacer"></div>
-      <button class="btn btn-outline btn-sm" id="btnRefreshPeople" onclick="refreshPeople()" title="从当前消息源重新拉一遍联系人 / 群列表；bot 被拉进新群后点它立即收录"> 刷新名单</button>
-    </div>
-
-    <div class="settings-scroll">
-
-      <!-- ── 子页：群聊 ── -->
-      <div class="members-sub active" id="sub-groups">
-
-        <div class="card">
-          <h3><span class="ic"></span>群里管什么</h3>
-          <div class="card-sub">
-            <b>回复</b> = 关掉就完全不理这个群（@ 也不理），<b>立即生效</b>；
-            <b>插嘴</b> = 没人 @ 时它会不会自己说话，改完点右下「 保存」。
-            bot 刚被拉进的群没列出来？点右上「 刷新名单」。
-          </div>
-          <div class="toolbar" style="margin-bottom:8px">
-            <input class="search-input" id="groupSearch" placeholder=" 搜群名 / 群 ID" oninput="renderGroups()">
-            <div class="spacer"></div>
-            <span class="set-note" id="groupCount"></span>
-          </div>
-          <table class="member-table">
-            <thead><tr>
-              <th style="width:52px" class="center" title="收到消息后要不要理这个群；关掉立即生效">回复</th>
-              <th style="width:52px" class="center" title="没人 @ 时允许它自己插嘴；保存并重启 AstrBot 后生效">插嘴</th>
-              <th>群名</th>
-              <th style="width:250px">群 ID / UMO（点击复制）</th>
-            </tr></thead>
-            <tbody id="groupsBody"><tr><td colspan="4" style="color:#7d838c">加载中...</td></tr></tbody>
-          </table>
-        </div>
-
-        <div class="card">
-          <h3><span class="ic"></span>随机插话（全局）</h3>
-          <div class="card-sub">
-            群消息没 @ 它时，按概率掷骰决定要不要插一嘴；关掉 = 只有 @ 才说话。
-            生效前提：群聊模式为「标准」、该群用 /new 建过会话、保存后重启 AstrBot。
-          </div>
-          <div class="settings-row">
-            <div class="settings-field" style="min-width:140px;max-width:180px">
-              <label>总开关</label>
-              <select id="ab_ar_enable" onchange="markDirty()"><option value="0">关闭</option><option value="1">开启</option></select>
-            </div>
-            <div class="settings-field" style="min-width:150px;max-width:200px">
-              <label>概率（0~1，建议 0.02~0.05）</label>
-              <input type="number" id="ab_ar_poss" step="0.01" min="0" max="1" placeholder="0.03" oninput="markDirty()">
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      <!-- ── 子页：私聊 ── -->
-      <div class="members-sub" id="sub-friends">
-        <div class="card" id="fwCard">
-          <h3><span class="ic"></span>私聊白名单</h3>
-          <div class="card-sub">
-            开关开启后<b>只回复勾选的好友</b>（群消息不受这份名单影响）。
-            改完点右下「 保存」，再「 重启 AstrBot」才生效。
-            新好友不在列表里？让对方先发一条消息，再点「 刷新名单」。
-          </div>
-          <div class="settings-row" style="margin-bottom:8px">
-            <div class="settings-field" style="min-width:170px;max-width:210px">
-              <label>开关</label>
-              <select id="fw_enable" onchange="syncWlEnable(this)"><option value="0">关闭（所有私聊都回）</option><option value="1">开启（只回勾选的好友）</option></select>
-            </div>
-            <div class="settings-field" style="flex:1;min-width:200px">
-              <label>搜索好友</label>
-              <input class="search-input" id="fwSearch" style="width:100%" placeholder=" 名字 / wxid / UID，输入即筛选" oninput="renderFriendList('fw_friends', currentWhitelist)">
-            </div>
-            <div class="settings-field" style="max-width:120px;align-self:end">
-              <label style="visibility:hidden">.</label>
-              <label class="chip" style="width:100%;justify-content:center"><input type="checkbox" id="fwOnlySel" onchange="renderFriendList('fw_friends', currentWhitelist)"><span class="dot"></span>只看已勾</label>
-            </div>
-          </div>
-          <div class="chip-wrap" id="fw_friends" style="max-height:420px;overflow:auto;border:1px solid #dedbd1;border-radius:10px;padding:8px"></div>
-          <div class="field-hint" style="margin-top:6px"><span id="fwCount">-</span>　（搜索只筛选显示，不影响已勾选项）</div>
-        </div>
-      </div>
-
-      <!-- ── 子页：会话风格 ── -->
-      <div class="members-sub" id="sub-styles">
-        <div class="card">
-          <h3><span class="ic"></span>会话检索风格</h3>
-          <div class="card-sub">
-            这里管理「好想成为人类啊」的风格注入：每个会话可选一个专属风格档案。
-            没有特殊设置的会话继续使用全局风格；保存后无需重启 AstrBot。
-          </div>
-          <div class="settings-row" style="margin-bottom:8px">
-            <div class="settings-field" style="min-width:220px;max-width:280px">
-              <label>全局风格（AstrBot 插件里设置）</label>
-              <input id="hsGlobalStyle" disabled placeholder="-">
-            </div>
-            <div class="settings-field" style="flex:1;min-width:200px">
-              <label>搜索会话</label>
-              <input class="search-input" id="hsSearch" style="width:100%" placeholder=" 群名 / 好友名 / UMO" oninput="renderHumanizerStyles()">
-            </div>
-            <div class="settings-field" style="max-width:130px;align-self:end">
-              <label style="visibility:hidden">.</label>
-              <label class="chip" style="width:100%;justify-content:center"><input type="checkbox" id="hsOnlyCustom" onchange="renderHumanizerStyles()"><span class="dot"></span>只看自定义</label>
-            </div>
-          </div>
-          <div class="tbl-scroll">
-            <table class="member-table">
-              <thead><tr>
-                <th>会话</th>
-                <th style="width:210px">使用风格</th>
-                <th style="width:250px">UMO（点击复制）</th>
-              </tr></thead>
-              <tbody id="hsBody"><tr><td colspan="3" style="color:#7d838c">加载中...</td></tr></tbody>
-            </table>
-          </div>
-          <div class="field-hint" style="margin-top:6px"><span id="hsCount">-</span>　（「跟随全局」不写入配置；风格档案仍需在人类风格插件中创建）</div>
-        </div>
-      </div>
-
-      <!-- ── 子页：管理员 ── -->
-      <div class="members-sub" id="sub-admins">
-        <div class="card">
-          <h3><span class="ic"></span>管理员</h3>
-          <div class="card-sub">
-            管理员可用跨群发消息等敏感能力。同一个人在私聊和所有群里是同一个 ID，勾一次全局生效。
-            桥接侧保存后立即生效；AstrBot 侧需重启。
-          </div>
-          <div class="toolbar" style="margin-bottom:8px">
-            <input class="search-input" id="memberSearch" placeholder=" 搜名字 / wxid" oninput="renderPeople()">
-            <div class="spacer"></div>
-            <span class="set-note">共 <span id="peopleCount">-</span> 人</span>
-          </div>
-          <div class="tbl-scroll">
-          <table class="member-table">
-            <thead><tr><th style="width:44px" class="center">管理</th><th>昵称</th><th style="width:190px">wxid</th><th>UID（/sid 显示的 ID）</th></tr></thead>
-            <tbody id="peopleBody"><tr><td colspan="4" style="color:#7d838c">加载中...</td></tr></tbody>
-          </table>
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-    <div class="save-bar">
-      <span class="dirty-dot" id="dirtyDot">● 未保存</span>
-      <span class="save-msg" id="abMsg">✅ 已保存</span>
-      <span class="warn-badge" id="wlRestartWarn"> 已保存但还没生效 —— 点「重启 AstrBot」</span>
-      <div class="spacer"></div>
-      <span id="abRestartState" class="field-hint" style="margin:0"></span>
-      <button class="btn btn-outline btn-sm" id="abRestartBtn" onclick="restartAstrbot()"> 重启 AstrBot</button>
-      <button class="btn btn-pink" id="abSaveBtn" onclick="saveAll()"> 保存</button>
+  <div class="header">
+    <h1><span class="en">People</span><span class="cn">成员与权限</span></h1>
+    <div class="badge" id="membersBadge">加载中</div>
+  </div>
+  <div class="seg-bar">
+    <button class="seg active" data-sub="groups" onclick="switchMembersTab('groups')">群聊</button>
+    <button class="seg" data-sub="friends" onclick="switchMembersTab('friends')" hidden>私聊</button>
+    <button class="seg" data-sub="admins" onclick="switchMembersTab('admins')" hidden>管理员</button>
+    <div class="spacer"></div><button id="btnRefreshPeople" onclick="refreshPeople()">刷新名单</button>
+  </div>
+  <div class="members-sub active" id="sub-groups">
+    <div class="card">
+      <div class="toolbar"><input class="search-input" id="groupSearch" placeholder="搜索群名或 ID" aria-label="搜索群聊" oninput="renderGroups()"><div class="spacer"></div><span class="set-note" id="groupCount"></span></div>
+      <p class="card-sub" id="groupNotice" role="status"></p>
+      <table class="member-table"><thead><tr><th>回复</th><th>群聊</th><th>OneBot 群 ID</th></tr></thead><tbody id="groupsBody"><tr><td colspan="3">加载中…</td></tr></tbody></table>
     </div>
   </div>
+  <div class="members-sub" id="sub-friends">
+    <div class="card">
+      <h3>私聊白名单</h3><p class="card-sub">开启后只回复选中的好友。</p>
+      <div class="toolbar"><label><input type="checkbox" id="fw_enable" onchange="markDirty()"> 启用白名单</label></div>
+      <input class="search-input" id="fwSearch" placeholder="搜索好友" aria-label="搜索好友" oninput="renderFriends()">
+      <div class="card" id="fw_friends"></div>
+    </div>
+  </div>
+  <div class="members-sub" id="sub-admins">
+    <div class="card">
+      <h3>管理员</h3><p class="card-sub">只授予可信好友。保存后重启 AstrBot 生效。</p>
+      <input class="search-input" id="memberSearch" placeholder="搜索好友" aria-label="搜索管理员" oninput="renderAdmins()">
+      <div class="card" id="peopleList"></div>
+    </div>
+  </div>
+  <div class="save-bar" id="peopleSaveBar" hidden>
+    <button class="primary" id="abSaveBtn" onclick="saveAll()" disabled>保存权限</button>
+    <button id="abRestartBtn" onclick="restartAstrbot()">重启 AstrBot</button>
+    <span class="sub" id="abStatus"></span>
+  </div>
+</div>

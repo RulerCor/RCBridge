@@ -492,6 +492,22 @@ def import_werc_group_names(document):
                 break
     if not groups:
         raise ValueError('文件中没有带名称的微信群，请在导出时选择「群聊」。')
+    return save_werc_group_names({'account_id': account, 'data': groups})
+
+
+def save_werc_group_names(document):
+    account = _group_directory_account()
+    if not account or not isinstance(document, dict) or document.get('account_id') != account:
+        raise ValueError('群名数据与当前 WeRC 授权账号不一致。')
+    groups = document.get('data')
+    if not isinstance(groups, dict) or any(
+        not isinstance(room, str) or not room.endswith('@chatroom')
+        or not isinstance(name, str) or not name.strip() or name.strip() == room
+        for room, name in groups.items()
+    ):
+        raise ValueError('WeRC 返回了无效的群名数据。')
+    if not groups:
+        return 0  # An empty cache must not erase previously imported names.
     saved = _read_json_file(GROUP_NAMES_FILE, {})
     if not isinstance(saved, dict):
         saved = {}

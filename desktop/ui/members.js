@@ -31,7 +31,7 @@ function loadPeopleData(d) {
     memberEl('membersBadge').textContent = d.astrbot_available ? 'AstrBot 权限' : d.astrbot_enabled ? 'AstrBot 配置不可用' : '群回复即时生效';
     renderFriends(); renderAdmins();
   }
-  memberEl('btnImportGroupNames').hidden = !d.group_name_import;
+  memberEl('btnImportGroupNames').hidden = memberEl('btnSyncGroupNames').hidden = !d.group_name_import;
   renderGroups();
 }
 
@@ -60,6 +60,18 @@ async function refreshPeople() {
   } finally {
     refreshBusy = false; btn.disabled = false; btn.textContent = '刷新名单';
   }
+}
+
+async function syncGroupNames() {
+  const btn = memberEl('btnSyncGroupNames'), notice = memberEl('groupNotice');
+  btn.disabled = true;
+  notice.textContent = '正在从 WeRC 同步群名…';
+  try {
+    const d = await peopleRequest('/api/group-names/sync', {});
+    loadPeopleData(await peopleRequest('/api/people'));
+    notice.textContent = d.imported ? `已同步 ${d.imported} 个群名。` : 'WeRC 暂无可同步的群名，已保留已有名称。';
+  } catch (e) { notice.textContent = '同步失败：' + e.message; }
+  finally { btn.disabled = false; }
 }
 
 async function importGroupNames(input) {

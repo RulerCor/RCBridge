@@ -10,6 +10,7 @@ from test_werc import row
 
 def run(bundle):
     key=uuid.uuid4().hex; result=queue.Queue(); connected=threading.Event(); sent=[]
+    group_response = {'account_id':'test-account', 'data':{'sample@chatroom':'Synced title'}}
     class Fake(BaseHTTPRequestHandler):
         def log_message(self,*a):pass
         def reply(self,obj):
@@ -24,6 +25,7 @@ def run(bundle):
                 pos = 7 if data else 0
                 self.reply({'data_mode':'native_observations','data':data,'next_cursor':pos})
             elif self.path.startswith('/api/v1/contacts?'):self.reply({'data':[]})
+            elif self.path == '/api/v1/contacts/group-names?account_id=test-account':self.reply(group_response)
             else:self.send_error(404)
         def do_POST(self):
             assert self.path=='/api/v1/messages/send-text';sent.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))));self.reply({'data':{'state':'queued','metadata':{'id':'test-ticket'}}})
@@ -75,6 +77,20 @@ def run(bundle):
             assert next(g['gid'] for g in roster if g['session']=='sample@chatroom') == previous_id
             saved_names = json.loads((Path(tmp)/'data/werc_group_names.json').read_text('utf8'))
             assert saved_names == {'test-account':{'sample@chatroom':'Real group title','other@chatroom':'Second group'}}
+            sync = Request(base+'/api/group-names/sync', data=b'{}', headers=headers)
+            assert json.load(opener.open(sync, timeout=5))['imported'] == 1
+            roster = json.load(opener.open(Request(base+'/api/people', headers=headers), timeout=3))['groups']
+            assert next((g['gid'], g['name']) for g in roster if g['session']=='sample@chatroom') == (previous_id, 'Synced title')
+            assert {g['session'] for g in roster} == {'sample@chatroom', 'other@chatroom'}
+            path = Path(tmp)/'data/werc_group_names.json'
+            before = path.read_bytes()
+            group_response['data'] = {}
+            assert json.load(opener.open(sync, timeout=5))['imported'] == 0
+            group_response.update(account_id='different-account', data={'sample@chatroom':'Wrong title'})
+            try: opener.open(sync, timeout=5)
+            except HTTPError as e: assert e.code == 400
+            else: raise AssertionError('Synced another WeRC account')
+            assert path.read_bytes() == before
             assert not sent  # discovery before starting never forwards or sends an observation
             toggle = Request(base+'/api/session-toggle', data=b'{"session":"sample@chatroom","muted":true}', headers=headers, method='POST')
             assert json.load(opener.open(toggle, timeout=3))['muted']

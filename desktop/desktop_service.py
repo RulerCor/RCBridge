@@ -87,6 +87,14 @@ def make_handler(key):
                     if not 0 < count < 16384: raise ValueError('配置长度无效')
                     candidate = WeRC.from_config(json.loads(self.rfile.read(count)))
                     ok, _, msg = candidate.check();self.send_json({'ok':ok,'message':msg});return
+                if self.path == '/api/group-names/sync':
+                    from people import save_werc_group_names
+                    if config.MESSAGE_SOURCE != 'werc':
+                        raise ValueError('当前接收源不是 WeRC。')
+                    document = WeRC.from_config(config.config).fetch_group_names()
+                    with self.server.edit_lock:
+                        imported = save_werc_group_names(document)
+                    self.send_json({'ok': True, 'imported': imported});return
                 if self.path == '/api/group-names/import':
                     from people import import_werc_group_names
                     count = int(self.headers.get('Content-Length', 0))

@@ -25,6 +25,12 @@ def sse_events(lines):
         elif line.startswith('data:'): parts.append(line[5:].lstrip(' '))
 
 
+class WeRCError(ValueError):
+    def __init__(self, path, status):
+        self.status = status
+        super().__init__(f'WeRC {path}: HTTP {status}（检查账号、授权范围及连接状态）')
+
+
 class WeRC:
     name = 'werc'
 
@@ -47,7 +53,7 @@ class WeRC:
             response = session.request(method, self.base_url + '/api/v1/' + path, headers=headers,
                                        allow_redirects=False, timeout=(4, 35), **kw)
         if not 200 <= response.status_code < 300:
-            raise ValueError(f'WeRC {path}: HTTP {response.status_code}（检查账号、授权范围及连接状态）')
+            raise WeRCError(path, response.status_code)
         return response
 
     def page(self, after, limit=100):
@@ -71,6 +77,16 @@ class WeRC:
     def fetch_contacts(self):
         rows = self.request('GET', 'contacts', params={'account_id': self.account}).json()['data']
         return [{'username': x['username'], 'displayName': x.get('remark') or x.get('nickname') or x['username']} for x in rows]
+
+    def fetch_group_names(self):
+        try:
+            return self.request('GET', 'contacts/group-names', params={'account_id': self.account}).json()
+        except WeRCError as e:
+            if e.status in (401, 403):
+                raise ValueError('请在 WeRC 重新签发勾选了「允许同步群名」的令牌，并在 RCBridge 导入。') from None
+            if e.status == 404:
+                raise ValueError('请使用支持群名同步的 WeRC，并确认已绑定当前微信来源；也可手动导入 JSON。') from None
+            raise
 
     def fetch_group_members(self, room):
         # No verified member identities in a native room envelope or contact snapshot.

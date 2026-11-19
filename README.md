@@ -1,4 +1,4 @@
-# RCBridge 0.1.0 · Windows 桌面桥接
+# RCBridge · Windows 桌面桥接
 
 **系列** RC_Mon3trBot｜浅灰纸面、深墨侧栏、单一酸黄。  
 **交互** 运行、连接、权限三个工作区；切角用于操作，细线用于分区。  
@@ -45,14 +45,14 @@
 
 ## 维护与验证
 
-源码位于 `desktop/`（窗口、桌面 HTTP 服务、界面与系列图标）、`bridge/`（消息源、收发器、OneBot、可选 AstrBot 管理）、`tests/`。`build_desktop.py` 只从本项目及所选 Python 环境组装发行包。`toolchain/` 是本机已准备的可移动 Python 与 WebView2 SDK 缓存，可离线构建；不随 Git 提交。`dist/` 放当前产品，`archives/` 保存拆分前的历史成品与开发资料。项目继承的桥接代码保留原 MIT 许可，见 LICENSE。
+源码位于 `desktop/`（窗口、桌面 HTTP 服务、界面与系列图标）、`bridge/`（消息源、收发器、OneBot、可选 AstrBot 管理）、`tests/`。`build_desktop.py` 只从本项目及所选 Python 环境组装发行包。`toolchain/` 是本机已准备的可移动 Python 与 WebView2 SDK 缓存，可离线构建；不随 Git 提交。版号以 `bridge/VERSION` 为准；[变更记录](CHANGELOG.md)记录各版本内容，[版号与存档](docs/版号与存档.md)说明如何归档、核验与回退。项目继承的桥接代码保留原 MIT 许可，见 LICENSE。
 
 在本项目根目录执行（PowerShell；输出目录须不存在）：
 
 ```powershell
 ./toolchain/python/python.exe -X utf8 -m unittest discover -s tests
-./toolchain/python/python.exe -X utf8 build_desktop.py dist/RCBridge-win-x64
-./toolchain/python/python.exe -X utf8 tests/offline_roundtrip.py dist/RCBridge-win-x64
+./toolchain/python/python.exe -X utf8 build_desktop.py build/smoke-win-x64
+./toolchain/python/python.exe -X utf8 tests/offline_roundtrip.py build/smoke-win-x64
 ```
 
 从纯源码重建：准备 Windows x64 CPython 3.13 和 .NET Framework 4.x 的 x64 C# 编译器；用 `py -3.13 -m venv .venv` 创建环境，运行 `.venv/Scripts/python.exe -m pip install -r requirements-lock.txt`，再用该解释器执行以上命令。缺少 WebView2 绑定缓存时，构建器通过 pip 下载固定版本 wheel 并核验摘要。

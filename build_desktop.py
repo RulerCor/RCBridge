@@ -1,8 +1,10 @@
 """Build a new portable x64 distribution from public sources, not the live bridge tree."""
 import hashlib
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -12,7 +14,17 @@ SDK_SHA='9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46'
 DEPS='certifi charset_normalizer comtypes idna mouseinfo PIL pyautogui pygetwindow pymsgbox pyperclip pyrect pyscreeze pytweening requests uiautomation urllib3 websockets'.split()
 CORE='astrbot_ctl bridge_core config exit_reason main message_source ob_client ob_protocol people senders state uia_sender web_panel werc_adapter wx_msg_parser'.split()
 
+def read_version():
+    version = (ROOT/'bridge/VERSION').read_text('utf8').strip()
+    if not re.fullmatch(r'(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){2}', version) or any(
+        int(part) > 65534 for part in version.split('.')
+    ):
+        raise ValueError('bridge/VERSION must be MAJOR.MINOR.PATCH (0–65534 per component)')
+    return version
+
+
 def build(out):
+    version = read_version()
     out.mkdir(parents=True,exist_ok=False)
     base=Path(sys.base_prefix); py=out/'python'; py.mkdir()
     import sysconfig
@@ -40,9 +52,18 @@ def build(out):
         for name in z.namelist():
             if '/licenses/' in name and not name.endswith('/'):(out/('WebView-'+Path(name).name)).write_bytes(z.read(name))
     csc=Path('C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe')
-    subprocess.run([str(csc),'/nologo','/target:winexe','/platform:x64','/utf8output','/win32icon:'+str(HERE/'assets/icon.ico'),'/out:'+str(out/'RCBridge.exe'),'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll',*['/reference:'+str(f) for f in out.glob('Microsoft.Web.*.dll')],str(HERE/'Workstation.cs')],check=True)
+    with tempfile.TemporaryDirectory() as temp:
+        metadata = Path(temp)/'Version.cs'
+        metadata.write_text(
+            f'[assembly: System.Reflection.AssemblyVersion("{version}.0")]\n'
+            f'[assembly: System.Reflection.AssemblyFileVersion("{version}.0")]\n'
+            f'[assembly: System.Reflection.AssemblyInformationalVersion("{version}")]\n',
+            encoding='ascii',
+        )
+        subprocess.run([str(csc),'/nologo','/target:winexe','/platform:x64','/utf8output','/win32icon:'+str(HERE/'assets/icon.ico'),'/out:'+str(out/'RCBridge.exe'),'/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll',*['/reference:'+str(f) for f in out.glob('Microsoft.Web.*.dll')],str(HERE/'Workstation.cs'),str(metadata)],check=True)
     if (ROOT/'README.md').exists():shutil.copy2(ROOT/'README.md',out/'使用说明.md')
+    shutil.copy2(ROOT/'CHANGELOG.md',out/'CHANGELOG.md')
     return out
 
 if __name__=='__main__':
-    print(build(Path(sys.argv[1]).resolve() if len(sys.argv)>1 else ROOT/'build/RCBridge-0.1.0'))
+    print(build(Path(sys.argv[1]).resolve() if len(sys.argv)>1 else ROOT/'build'/f'RCBridge-{read_version()}-win-x64'))

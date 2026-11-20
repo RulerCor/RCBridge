@@ -13,6 +13,8 @@ AI 服务：AstrBot 通过 aiocqhttp (OneBot v11) 接入
 
 # 共享状态：所有模块通过 import state 访问这些变量
 import hashlib
+import os
+from pathlib import Path
 import threading
 import time
 from typing import Optional
@@ -218,26 +220,47 @@ ob_thread = None       # OneBot 客户端线程引用（停止时用来等待它
 #
 # AstrBot 开启 reply_with_quote 后，回复会带 {"type":"reply","data":{"id":N}} 段。
 # 桥接必须：① 给每条收到的消息分配 message_id ② 记住 id → 原文映射
-# ③ 发送时把 reply 段翻译成可读文本前缀（微信 UIA 无法原生引用回复）。
+# ③ WeRC 按认证过的原消息标识引用；其他发送后端仍可使用原文。
 
 import time as _time
 
-_msg_id_seq = 0
+# Reserve IDs in the profile, so a delayed reply from before a restart cannot
+# accidentally quote a new message. Keep them positive signed OneBot int32s.
+_MSG_ID_START = 1_000_000_000
+_MSG_ID_MAX = 2**31 - 1
+_msg_id_seq = _msg_id_limit = _MSG_ID_START
+_msg_id_path = Path(os.environ.get("RCBRIDGE_HOME") or Path(__file__).resolve().parent) / "data" / "onebot_message_id"
 _msg_store: dict[int, dict] = {}          # message_id → {"sender","content","contact","ts"}
 _MSG_STORE_MAX = 500                      # 最多记住最近 500 条，防止内存无限增长
 _msg_lock = threading.Lock()
 
 
 def next_message_id() -> int:
-    """分配一条自增的 OneBot message_id（进程内唯一即可）。"""
-    global _msg_id_seq
+    """分配 OneBot message_id；同一生产实例重启后不复用旧编号。"""
+    global _msg_id_seq, _msg_id_limit
     with _msg_lock:
+        if _msg_id_seq == _msg_id_limit:
+            try:
+                last = int(_msg_id_path.read_text(encoding="ascii"))
+            except FileNotFoundError:
+                last = _MSG_ID_START
+            if not _msg_id_seq <= last < _MSG_ID_MAX:
+                raise ValueError("无效或已用完的 OneBot 消息编号")
+            limit = min(last + 1024, _MSG_ID_MAX)
+            _msg_id_path.parent.mkdir(parents=True, exist_ok=True)
+            temp = _msg_id_path.with_suffix(".tmp")
+            with temp.open("w", encoding="ascii") as file:
+                file.write(str(limit))
+                file.flush()
+                os.fsync(file.fileno())
+            temp.replace(_msg_id_path)
+            _msg_id_seq, _msg_id_limit = last, limit
         _msg_id_seq += 1
         return _msg_id_seq
 
 
 def remember_message(mid: int, sender: str, content: str, contact: str,
-                     user_id=None, group_id=None, is_group: bool = False) -> None:
+                     user_id=None, group_id=None, is_group: bool = False, werc_quote=None) -> None:
     """记录一条已推送消息，供后续 reply 段 / get_msg 回查。"""
     with _msg_lock:
         _msg_store[int(mid)] = {
@@ -247,6 +270,7 @@ def remember_message(mid: int, sender: str, content: str, contact: str,
             "user_id": user_id,
             "group_id": group_id,
             "is_group": bool(is_group),
+            "werc_quote": werc_quote,
             "ts": _time.time(),
         }
         if len(_msg_store) > _MSG_STORE_MAX:

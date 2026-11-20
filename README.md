@@ -16,6 +16,8 @@ RCBridge 是一个 Windows 桌面桥接工具：通过 WeRC 接收微信消息�
 
 新版 WeRC 的「Bot 收发」令牌默认包含群名同步、好友列表和分类通讯录，无需分别勾选。「成员与权限」可查看名称和 OneBot ID，并按类别浏览通讯录。数据来自 WeRC 本地缓存，不代表微信服务器的实时全量名单。
 
+OneBot `reply` 支持微信原生文字引用，需要 WeRC 的引用接口支持按接收位置（`position`）定位原消息。合并事件引用最后一条可引用的原始文字。
+
 ### 快速开始
 
 1. 从 [Releases](../../releases) 下载 Windows x64 便携包。完整解压，运行顶层的 `RCBridge.exe`。
@@ -37,6 +39,8 @@ RCBridge is a Windows desktop bridge. It receives WeChat messages through WeRC, 
 | Bots | OneBot v11 over **reverse WebSocket**: RCBridge connects to the endpoint exposed by the downstream app. AstrBot is optional and enables additional member-permission sync and restart controls when configured. |
 
 The newer WeRC Bot preset includes group-name sync, the friend list, and the categorized directory in one token. People shows names alongside OneBot IDs and lets you browse the directory by category. The directory reflects WeRC’s local cache, not live server relationships.
+
+OneBot `reply` supports native WeChat text quotes with a WeRC build that can resolve the original message by receive `position`. A merged event quotes its last eligible original text message.
 
 ### Quick start
 

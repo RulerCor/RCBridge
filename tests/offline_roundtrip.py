@@ -5,11 +5,15 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler, Request
 from websockets.sync.server import serve
-from test_werc import row
+from test_werc import quoted, row
 
 
 def run(bundle):
     key=uuid.uuid4().hex; result=queue.Queue(); connected=threading.Event(); sent=[]
+    later = threading.Event(); finished = threading.Event()
+    originals = {pos: row(peer, position=pos) for pos, peer in
+                 [(8, 'friend'), (9, 'other@chatroom'), (10, 'friend'), (11, 'friend')]}
+    assert originals[8]['payload']['message']['text'] == originals[11]['payload']['message']['text']
     group_response = {'account_id':'test-account', 'data':{'sample@chatroom':'Synced title','directory-only@chatroom':'Directory only'}}
     friend_response = {'account_id':'test-account','data_mode':'local_friend_directory','data':[
         {'username':'friend','nickname':'Test friend','remark':'Test remark'},
@@ -31,9 +35,17 @@ def run(bundle):
             assert self.headers['Authorization']=='Bearer demo'
             if self.path.startswith('/api/v1/messages/native/stream?'):
                 assert self.headers['Last-Event-ID']=='7';connected.wait(4);self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
-                for pos, peer in [(8, 'friend'), (9, 'other@chatroom')]:
-                    self.wfile.write((f'event: message.received\nid: {pos}\ndata: '+json.dumps(dict(row(peer), position=pos))+'\n\n').encode())
-                self.wfile.flush();return
+                def emit(*positions):
+                    frame = ''.join(f'event: message.received\nid: {pos}\ndata: '+json.dumps(originals[pos])+'\n\n' for pos in positions)
+                    # Flush complete frames through requests' fixed-size stream reads.
+                    self.wfile.write((frame + ':' + ' '*256 + '\n\n').encode())
+                    self.wfile.flush()
+                emit(8, 9)
+                assert later.wait(10)
+                emit(10, 11)
+                # Keep the stream open until after the requests, so it never replays.
+                finished.wait(12)
+                return
             if self.path.startswith('/api/v1/messages/native?'):
                 # Discovery sees a known group while the imported contact snapshot is empty.
                 data = [row('sample@chatroom', type_=43)]
@@ -45,7 +57,19 @@ def run(bundle):
             elif self.path == '/api/v1/contacts/directory?account_id=test-account' and directory_enabled:self.reply(categorized)
             else:self.send_error(404)
         def do_POST(self):
-            assert self.path=='/api/v1/messages/send-text';sent.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))));self.reply({'data':{'state':'queued','metadata':{'id':'test-ticket'}}})
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            sent.append((self.path, body))
+            if self.path == '/api/v1/messages/send/quote':
+                m = body['message']
+                original = originals[m['position']]['payload']
+                assert body['account_id'] == original['account_id']
+                assert m['username'] == original['target_id']
+                assert m['server_id'] == original['message']['native_message_id']
+                status = 'unknown' if m['text'] == 'uncertain' else 'server_accepted'
+                self.reply({'data':{'state':status,'metadata':{'id':'test-quote'}}})
+            else:
+                assert self.path == '/api/v1/messages/send-text'
+                self.reply({'data':{'state':'queued','metadata':{'id':'test-ticket'}}})
     def bot(ws):
         try:
             assert ws.request.headers["Authorization"] == "Bearer mock-onebot"
@@ -73,9 +97,24 @@ def run(bundle):
             assert response['status']=='ok'
             assert next(g['group_name'] for g in response['data'] if g['group_id']==events['group']['group_id']) == 'Second group'
             assert {'Synced title', 'Directory only'} <= {g['group_name'] for g in response['data']}
+            later.set()
+            while True:
+                merged = json.loads(ws.recv(timeout=7))
+                if merged.get('post_type') == 'message' and merged.get('message_type') == 'private':
+                    break
+            assert merged['message_id'] != private['message_id']
+            assert merged['message'] == [{'type':'text','data':{'text':'hello\nhello'}}], merged['message']
+            for mid, expected in [(private['message_id'], 8), (merged['message_id'], 11)]:
+                res = call('send_private_msg', {'user_id':private['user_id'], 'message':quoted(mid)})
+                assert res['status'] == 'ok' and res['data']['receipts'][0]['kind'] == 'quote', res
+                _, body = sent[-1]
+                assert body['message']['position'] == expected, body
+            res = call('send_private_msg', {'user_id':private['user_id'], 'message':quoted(merged['message_id'], 'uncertain')})
+            assert res['status'] == 'failed' and '原生引用发送未确认' in res['wording'], res
             res = call('send_private_msg', {'user_id':private['user_id'],'message':'offline reply'})
             assert res['status']=='async' and res['data']['receipts'][0]['task']=='test-ticket';result.put(True)
         except Exception as e:result.put(e)
+        finally: finished.set()
     with ThreadingHTTPServer(('127.0.0.1',0),Fake) as w, serve(bot,'127.0.0.1',0) as ws, tempfile.TemporaryDirectory() as tmp:
         for server in (w,ws):threading.Thread(target=server.serve_forever,daemon=True).start()
         cfg=json.loads((bundle/'app/bridge/config.example.json').read_text('utf8'));cfg.update(web_port=0,werc_account_id='test-account',werc_token='demo',werc_base_url=f'http://127.0.0.1:{w.server_port}/api/v1',message_source='werc',send_method='werc',buffer_seconds=0.1,onebot_token="mock-onebot",onebot_ws_url=f'ws://127.0.0.1:{ws.socket.getsockname()[1]}/ws',bot_nicknames=[],bot_wxid='',astrbot_config_file='');(Path(tmp)/'config.json').write_text(json.dumps(cfg),'utf8')
@@ -158,7 +197,9 @@ def run(bundle):
             else:raise AssertionError('generic mode allowed AstrBot restart')
             assert json.load(opener.open(req,timeout=5))['ok'];out=result.get(timeout=17)
             if isinstance(out,Exception):raise out
-            assert len(sent)==1 and sent[0]['username']=='friend' and sent[0]['text']=='offline reply';print('PASS: routed friend/group IDs, directory names, account rejection and synthetic message roundtrip')
+            assert [path for path, _ in sent] == ['/api/v1/messages/send/quote']*3 + ['/api/v1/messages/send-text'], sent
+            assert sent[-1][1]['username'] == 'friend' and sent[-1][1]['text'] == 'offline reply'
+            print('PASS: routed friend/group IDs, directory, exact duplicate-text quotes, merge target, no fallback and ordinary send')
         finally:
             proc.stdin.close();proc.wait(timeout=12);ws.shutdown();w.shutdown()
 

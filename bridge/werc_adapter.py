@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import re
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +24,23 @@ def sse_events(lines):
             kind, parts = '', []
         elif line.startswith('event:'): kind = line[6:].strip()
         elif line.startswith('data:'): parts.append(line[5:].lstrip(' '))
+
+
+def onebot_segments(message, auto_escape=False):
+    if not isinstance(message, str):
+        return message
+    if auto_escape or '[CQ:reply,' not in message:
+        return [{'type': 'text', 'data': {'text': message}}]
+    # String form of the same reply segment. Do not treat escaped CQ codes as segments.
+    parts = re.split(r'\[CQ:reply,([^\]]*)\]', message)
+    chain = []
+    for i, part in enumerate(parts):
+        if i % 2:
+            mid = re.fullmatch(r'id=([0-9]+)', part)
+            chain.append({'type': 'reply', 'data': {'id': mid[1] if mid else None}})
+        elif part:
+            chain.append({'type': 'text', 'data': {'text': part.replace('&#91;', '[').replace('&#93;', ']').replace('&amp;', '&')}})
+    return chain
 
 
 class WeRCError(ValueError):
@@ -163,6 +181,14 @@ class WeRC:
                      senderWxid='' if room else peer, talkerId='' if room else peer, rawid=p['id'], type=kind,
                      timestamp=int(time.time()), _roomEnvelope=room)
         if kind == 3: event['_alphaMediaUrl'] = 'werc-image:' + str(int(row['position']))
+        server_id, position = msg.get('native_message_id'), row.get('position')
+        if (kind == 1 and isinstance(server_id, str) and server_id.isascii()
+                and server_id.isdecimal() and not server_id.startswith('0')
+                and len(server_id) <= 20 and int(server_id) < 2**64
+                and type(position) is int and position > 0):
+            event['_wercQuote'] = {'account_id': self.account, 'username': peer,
+                                   'position': position,
+                                   'server_id': server_id}
         return event
 
     def download_media(self, url):
@@ -225,11 +251,23 @@ class WeRC:
 
     def send_onebot(self, action, params, state, config):
         receipts = []
+        outcome = '普通发送'
         try:
+            chain = onebot_segments(params['message'], params.get('auto_escape', False))
+            replies = [seg['data'].get('id') for seg in chain if seg['type'] == 'reply']
+            if replies:
+                outcome = '原生引用不可用'
             group = action == 'send_group_msg' or (action == 'send_msg' and (params.get('message_type') == 'group' or 'group_id' in params))
             peer = state.get_session_id(int(params['group_id' if group else 'user_id']))
             if not peer or group != peer.endswith('@chatroom'): raise ValueError('没有已确认的微信会话映射，不按昵称猜测')
-            chain = params['message']; chain = [{'type':'text','data':{'text':chain}}] if isinstance(chain,str) else chain
+            quote = None
+            if replies:
+                if len(replies) != 1:
+                    raise ValueError('一个发送请求只能引用一条原消息')
+                original = state.get_message(replies[0]) or {}
+                quote = original.get('werc_quote')
+                if not quote or quote['account_id'] != self.account or quote['username'] != peer:
+                    raise ValueError('没有当前账号和会话中可核验的原消息（只支持近期普通文字）')
             jobs = []; text = ''
             for seg in chain:
                 kind, d = seg['type'], seg['data']
@@ -237,24 +275,48 @@ class WeRC:
                 elif kind == 'at':
                     if config.MENTION_AS_TEXT: text += '@' + str(state.get_member_name(int(d['qq'])) or d['qq'] if str(d['qq']).isdigit() else d['qq']) + ' '
                 elif kind == 'reply':
-                    if config.QUOTE_REPLY_PREFIX:
-                        original = state.get_message(d.get('id')) or {}
-                        if original: text += f"〔回复 {original.get('sender', '?')}：{original.get('content', '')[:40]}〕\n"
+                    continue
                 elif kind in MEDIA:
-                    if text.strip(): jobs.append(('text', {'text':text.strip()}))
-                    text = ''; jobs.append((MEDIA[kind][1], {'asset_id':self._asset(kind, d, config.ASTRBOT_ATTACHMENTS)}))
+                    if text.strip(): jobs.append(('text', text.strip()))
+                    text = ''; jobs.append((MEDIA[kind][1], (kind, d)))
                 else: raise ValueError(f'不支持的 OneBot 段：{kind}')
-            if text.strip(): jobs.append(('text', {'text':text.strip()}))
+            if text.strip(): jobs.append(('text', text.strip()))
             if not jobs: raise ValueError('没有可发送内容')
-            for kind, payload in jobs:
-                if kind == 'text': payload['wait_seconds'] = 2
-                ticket = self.request('POST', 'messages/send-' + kind, headers={'Idempotency-Key':uuid.uuid4().hex}, json={'account_id':self.account, 'username':peer, **payload}).json()['data']
-                status = ticket['state']; receipts.append({'state':status,'task':ticket.get('metadata',{}).get('id')})
-                log.info('WeRC 发件箱：%s', status)
+            if quote:
+                # WeRC supports a text quote bubble, not a quoted attachment.
+                # Send it first so a rejected/unknown quote cannot send media or plain text.
+                if jobs[0][0] != 'text':
+                    raise ValueError('原生引用需要以可发送的文字开头')
+                jobs[0] = ('quote', jobs[0][1])
+            else:
+                # Keep ordinary sends' existing upload-before-send behavior.
+                jobs = [(kind, value if kind == 'text' else
+                         self._asset(*value, config.ASTRBOT_ATTACHMENTS)) for kind, value in jobs]
+            for kind, value in jobs:
+                key = uuid.uuid4().hex
+                if kind == 'quote':
+                    outcome = '原生引用发送未确认'
+                    message = {k: v for k, v in quote.items() if k != 'account_id'}
+                    ticket = self.request('POST', 'messages/send/quote', json={
+                        'account_id': self.account,
+                        'message': {**message, 'text': value, 'idempotency_key': key},
+                    }).json()['data']
+                else:
+                    outcome = '普通发送'
+                    payload = ({'text': value, 'wait_seconds': 2} if kind == 'text' else
+                               {'asset_id': self._asset(*value, config.ASTRBOT_ATTACHMENTS) if quote else value})
+                    ticket = self.request('POST', 'messages/send-' + kind, headers={'Idempotency-Key':key}, json={'account_id':self.account, 'username':peer, **payload}).json()['data']
+                status = ticket['state']; receipts.append({'kind':kind,'state':status,'task':ticket.get('metadata',{}).get('id')})
+                log.info('WeRC %s发件箱：%s', '原生引用' if kind == 'quote' else '普通发送', status)
                 if status not in ('queued','submitting','awaiting_approval','server_accepted','recipient_confirmed'):
+                    if kind == 'quote' and status in ('rejected', 'canceled', 'expired'):
+                        outcome = '原生引用未发送'
                     raise ValueError(f'发件箱状态 {status}，请在 WeRC 核对；未自动重发')
             done = all(r['state'] in ('server_accepted','recipient_confirmed') for r in receipts)
             return {'status':'ok' if done else 'async','retcode':0 if done else 1,'data':{'receipts':receipts}}
         except (ValueError, KeyError, TypeError, OSError, requests.RequestException) as e:
-            log.warning('WeRC 发送未确认：%s', e)
-            return {'status':'failed','retcode':100,'wording':str(e),'data':{'receipts':receipts}}
+            if outcome == '原生引用发送未确认' and isinstance(e, WeRCError) and e.status in (400, 401, 403, 404, 405, 422):
+                outcome = '原生引用不可用'
+            log.warning('WeRC %s：%s', '普通发送未确认' if outcome == '普通发送' else outcome, e)
+            wording = str(e) if outcome == '普通发送' else f'{outcome}：{e}；未补发普通文本'
+            return {'status':'failed','retcode':100,'wording':wording,'data':{'receipts':receipts}}

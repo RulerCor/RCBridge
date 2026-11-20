@@ -189,6 +189,7 @@ class WeFlowBridge:
                 # 引用图片的元数据（svrid/md5）：下载同样放到推送前做，
                 # 避免在 SSE 接收线程里同步翻页造成消息积压（实测每页 ~4s）。
                 "pending_quote_images": [],
+                "werc_quote": None,
                 "timer": None,
                 "timer_version": 0,
                 "processing": False,
@@ -493,6 +494,10 @@ class WeFlowBridge:
                 entry["messages"].append(f'成员"{sender_in_group}"在群"{base_name}"中对你说：{content}')
             else:
                 entry["messages"].append(content)
+            # One event may contain several originals. Quote the last eligible
+            # text appended to this batch, not the merged/transformed text.
+            if data.get("_wercQuote"):
+                entry["werc_quote"] = data["_wercQuote"]
             # 记录这一批消息里是否有人真的 @ 过机器人：
             # @ 段只在真 @ 时才加（process_sender 用）——否则 all 模式下每条消息
             # 都会被 AstrBot 当成 @ 唤醒，逐条必回，随机插话机制完全失效。
@@ -719,6 +724,7 @@ class WeFlowBridge:
             entry["pending_images"] = []
             entry["pending_sticker_segments"] = []
             entry["pending_quote_images"] = []
+            werc_quote = entry.pop("werc_quote", None)
             entry["processing"] = True
             if entry["timer"]:
                 entry["timer"].cancel()
@@ -878,6 +884,7 @@ class WeFlowBridge:
             user_id=user_id,
             group_id=group_id,
             is_group=is_group,
+            werc_quote=werc_quote,
         )
 
         if push_event(event):

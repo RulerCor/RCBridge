@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -11,8 +12,18 @@ from urllib.request import url2pathname
 
 import requests
 
+from state import _wxid_to_int
+
 log = logging.getLogger('ob11-bridge')
 MEDIA = {'image': ('images', 'image'), 'file': ('files', 'file'), 'video': ('videos', 'video'), 'record': ('audio', 'voice')}
+
+
+WECHAT_ID = re.compile(r'[A-Za-z0-9_.@-]{1,127}')
+HTTP_ERRORS = {
+    422: ('invalid_request', '请求字段不符合 WeRC 接口要求'),
+    429: ('rate_limited', 'WeRC 忙或已达限额，未自动重试'),
+    415: ('unsupported_media', 'WeRC 不支持该媒体类型或格式'),
+}
 
 
 def sse_events(lines):
@@ -46,7 +57,8 @@ def onebot_segments(message, auto_escape=False):
 class WeRCError(ValueError):
     def __init__(self, path, status):
         self.status = status
-        super().__init__(f'WeRC {path}: HTTP {status}（检查账号、授权范围及连接状态）')
+        self.code, detail = HTTP_ERRORS.get(status, ('http_error', '检查账号、授权范围及连接状态'))
+        super().__init__(f'WeRC {path}: HTTP {status}（{detail}）')
 
 
 class WeRC:
@@ -59,6 +71,11 @@ class WeRC:
         if not token or not account:
             raise ValueError('请在连接设置填写 WeRC 账号 ID 与授权令牌，并重新打开桌面端')
         self.base_url, self.token, self.account = f'{url.scheme}://{url.netloc}', token, account
+        # This cache belongs to the account-bound adapter, not the shared name/legacy-source cache.
+        self._sessions = {}
+        self._session_lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        self._history_after = 0
 
     @classmethod
     def from_config(cls, cfg):
@@ -76,7 +93,9 @@ class WeRC:
 
     def page(self, after, limit=100):
         data = self.request('GET', 'messages/native', params={'account_id': self.account, 'after': after, 'limit': limit}).json()
-        if data.get('data_mode') != 'native_observations' or not isinstance(data.get('data'), list):
+        if (not isinstance(data, dict) or data.get('data_mode') != 'native_observations'
+                or not isinstance(data.get('data'), list)
+                or type(data.get('next_cursor')) is not int or data['next_cursor'] < 0):
             raise ValueError('不是 WeRC 原生接收页')
         return data
 
@@ -84,7 +103,11 @@ class WeRC:
         try:
             self.page(-1, 1)
             return True, 200, 'WeRC 原生观测接口已授权（不代表微信在线）'
-        except (ValueError, requests.RequestException) as e:
+        except WeRCError as e:
+            return False, e.status, str(e)
+        except ValueError as e:
+            return False, 400, str(e)
+        except requests.RequestException as e:
             return False, 0, str(e)
 
     def detect_identity(self):
@@ -136,16 +159,51 @@ class WeRC:
     def fetch_messages(self, *a, **kw):
         return {'messages': []}  # Never substitute snapshot history for native observations.
 
-    def native_peer(self, row):
-        p = row.get('payload') or {}
-        route = p.get('route') or {}
-        peer, me = p.get('target_id'), p.get('sender_id')
-        if (p.get('account_id') == self.account and p.get('schema_version') == 3
-                and isinstance(peer, str) and peer and me and peer != me
-                and route.get('sender') == peer and route.get('receiver') == me
-                and route.get('conversation') == peer):
+    def native_peer(self, row, *, include_outgoing=False):
+        payload = row.get('payload') if isinstance(row, dict) else None
+        if (not isinstance(payload, dict) or payload.get('account_id') != self.account
+                or payload.get('schema_version') != 3):
+            return ''
+        route = payload.get('route')
+        peer, me = payload.get('target_id'), payload.get('sender_id')
+        if (not isinstance(route, dict) or route.get('conversation') != peer or peer == me
+                or not all(isinstance(x, str) and WECHAT_ID.fullmatch(x) for x in (peer, me))):
+            return ''
+        endpoints = route.get('sender'), route.get('receiver')
+        if endpoints == (peer, me) or (include_outgoing and endpoints == (me, peer)):
             return peer
         return ''
+
+    def _remember_sessions(self, peers):
+        with self._session_lock:
+            for peer in peers:
+                if not peer:
+                    continue
+                key = (_wxid_to_int(peer), peer.endswith('@chatroom'))
+                if self._sessions.setdefault(key, peer) != peer:
+                    self._sessions[key] = None  # Known collisions must not route to either target.
+
+    def _resolve_session(self, ob_id, group):
+        key = (ob_id, group)
+        with self._history_lock:
+            with self._session_lock:
+                if key in self._sessions:
+                    return self._sessions[key]
+            # Build the ID index from durable observations without forwarding them or
+            # changing the SSE cursor. Bound the scan to the current head.
+            head = self.page(-1, 1)['next_cursor']
+            after = self._history_after
+            peers = set()
+            while after < head:
+                page = self.page(after)
+                if not page['data'] or page['next_cursor'] <= after:
+                    raise ValueError('WeRC 原生会话历史分页未推进')
+                peers.update(self.native_peer(row, include_outgoing=True) for row in page['data'])
+                after = page['next_cursor']
+            self._remember_sessions(peers)
+            self._history_after = after
+            with self._session_lock:
+                return self._sessions.get(key)
 
     def recent_groups(self):
         # Inspect a bounded window of observations, without forwarding old messages.
@@ -176,6 +234,8 @@ class WeRC:
         elif kind != 1: return None
         if not text.strip(): return None
         name = name_of(peer) or peer
+        # Schema 3 authenticates the envelope, not the group member: sender_id
+        # is the local login, and route.sender is the room for incoming groups.
         event = dict(content=text, sessionId=peer, sessionType='group' if room else 'private',
                      sourceName=name, groupName=name if room else '', senderName='未标识群成员' if room else name,
                      senderWxid='' if room else peer, talkerId='' if room else peer, rawid=p['id'], type=kind,
@@ -224,6 +284,7 @@ class WeRC:
                     pos = int(body['position'])
                     if pos <= bridge.werc_cursor: continue
                     peer = self.native_peer(body)
+                    self._remember_sessions((peer or self.native_peer(body, include_outgoing=True),))
                     if peer.endswith('@chatroom'):
                         state.note_observed_groups((peer,))
                     event = self.event(body, state.get_chat_name)
@@ -252,14 +313,19 @@ class WeRC:
     def send_onebot(self, action, params, state, config):
         receipts = []
         outcome = '普通发送'
+        phase, error_code = 'prepare', 'invalid_request'
         try:
             chain = onebot_segments(params['message'], params.get('auto_escape', False))
             replies = [seg['data'].get('id') for seg in chain if seg['type'] == 'reply']
             if replies:
                 outcome = '原生引用不可用'
             group = action == 'send_group_msg' or (action == 'send_msg' and (params.get('message_type') == 'group' or 'group_id' in params))
-            peer = state.get_session_id(int(params['group_id' if group else 'user_id']))
-            if not peer or group != peer.endswith('@chatroom'): raise ValueError('没有已确认的微信会话映射，不按昵称猜测')
+            target = int(params['group_id' if group else 'user_id'])
+            phase, error_code = 'resolve', 'session_unconfirmed'
+            peer = self._resolve_session(target, group)
+            if not peer:
+                raise ValueError('当前 WeRC 账号的原生记录没有唯一可确认的微信会话映射，不按昵称猜测')
+            phase, error_code = 'prepare', 'invalid_request'
             quote = None
             if replies:
                 if len(replies) != 1:
@@ -290,6 +356,7 @@ class WeRC:
                 jobs[0] = ('quote', jobs[0][1])
             else:
                 # Keep ordinary sends' existing upload-before-send behavior.
+                phase = 'upload'
                 jobs = [(kind, value if kind == 'text' else
                          self._asset(*value, config.ASTRBOT_ATTACHMENTS)) for kind, value in jobs]
             for kind, value in jobs:
@@ -297,26 +364,45 @@ class WeRC:
                 if kind == 'quote':
                     outcome = '原生引用发送未确认'
                     message = {k: v for k, v in quote.items() if k != 'account_id'}
+                    phase = 'send'
                     ticket = self.request('POST', 'messages/send/quote', json={
                         'account_id': self.account,
                         'message': {**message, 'text': value, 'idempotency_key': key},
                     }).json()['data']
                 else:
                     outcome = '普通发送'
-                    payload = ({'text': value, 'wait_seconds': 2} if kind == 'text' else
-                               {'asset_id': self._asset(*value, config.ASTRBOT_ATTACHMENTS) if quote else value})
+                    if kind != 'text' and quote:
+                        phase = 'upload'
+                        value = self._asset(*value, config.ASTRBOT_ATTACHMENTS)
+                    payload = {'text': value, 'wait_seconds': 2} if kind == 'text' else {'asset_id': value}
+                    phase = 'send'
                     ticket = self.request('POST', 'messages/send-' + kind, headers={'Idempotency-Key':key}, json={'account_id':self.account, 'username':peer, **payload}).json()['data']
                 status = ticket['state']; receipts.append({'kind':kind,'state':status,'task':ticket.get('metadata',{}).get('id')})
                 log.info('WeRC %s发件箱：%s', '原生引用' if kind == 'quote' else '普通发送', status)
                 if status not in ('queued','submitting','awaiting_approval','server_accepted','recipient_confirmed'):
-                    if kind == 'quote' and status in ('rejected', 'canceled', 'expired'):
+                    phase = 'outbox'
+                    not_sent = status in ('rejected', 'canceled', 'expired')
+                    error_code = 'outbox_not_sent' if not_sent else 'outbox_unknown'
+                    if not_sent and kind == 'quote':
                         outcome = '原生引用未发送'
                     raise ValueError(f'发件箱状态 {status}，请在 WeRC 核对；未自动重发')
             done = all(r['state'] in ('server_accepted','recipient_confirmed') for r in receipts)
             return {'status':'ok' if done else 'async','retcode':0 if done else 1,'data':{'receipts':receipts}}
         except (ValueError, KeyError, TypeError, OSError, requests.RequestException) as e:
-            if outcome == '原生引用发送未确认' and isinstance(e, WeRCError) and e.status in (400, 401, 403, 404, 405, 422):
-                outcome = '原生引用不可用'
-            log.warning('WeRC %s：%s', '普通发送未确认' if outcome == '普通发送' else outcome, e)
-            wording = str(e) if outcome == '普通发送' else f'{outcome}：{e}；未补发普通文本'
-            return {'status':'failed','retcode':100,'wording':wording,'data':{'receipts':receipts}}
+            error = {'phase': phase, 'code': error_code}
+            if isinstance(e, WeRCError):
+                error.update(code=e.code, http_status=e.status)
+            detail = str(e)
+            if phase == 'send' and (not isinstance(e, WeRCError) or e.status >= 500 or e.status == 408):
+                error['code'] = 'send_unconfirmed'
+                detail += '；发送结果未确认，请在 WeRC 核对；未自动重发'
+            if phase == 'send' and isinstance(e, WeRCError) and e.status < 500 and e.status != 408:
+                outcome = '原生引用不可用' if outcome.startswith('原生引用') else '普通发送被拒绝'
+            elif outcome == '普通发送' and error['code'] in ('outbox_unknown', 'send_unconfirmed'):
+                outcome = '普通发送未确认'
+            wording = f'{outcome}：{detail}'
+            if outcome.startswith('原生引用'):
+                wording += '；未补发普通文本'
+            log.warning('WeRC [%s/%s] %s', phase, error['code'], wording)
+            return {'status':'failed','retcode':100,'wording':wording,
+                    'data':{'receipts':receipts, 'error':error}}

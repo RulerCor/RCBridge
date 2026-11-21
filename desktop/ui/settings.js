@@ -1,3 +1,34 @@
+const startupControls = ['launch_at_logon', 'auto_start_bridge'].map(id => document.getElementById(id));
+const startupFeedback = document.getElementById('startupFeedback');
+let startupBusy = false;
+let startupState;
+
+async function updateStartup(control) {
+  if (startupBusy) return;
+  startupBusy = true;
+  for (const input of startupControls) input.disabled = true;
+  try {
+    const request = control && {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({[control.id]:control.checked})};
+    const r = await fetch('/api/startup', request);
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw Error(data.error || '无法读取启动设置');
+    startupState = data;
+    startupFeedback.textContent = control ? '已保存。' : '更改开关后立即保存。';
+  } catch (e) {
+    startupFeedback.textContent = e.message;
+  } finally {
+    for (const input of startupControls) {
+      input.checked = startupState?.[input.id] === true;
+      input.disabled = !startupState;
+    }
+    startupBusy = false;
+  }
+}
+
+function loadStartup() { return updateStartup(); }
+for (const input of startupControls) input.addEventListener('change', () => updateStartup(input));
+
 const connectionFields = {
   wercFields: [
     ['werc_base_url', 'WeRC 本机地址'], ['werc_account_id', '账号 ID'], ['werc_token', 'Bot 令牌', 'password'],

@@ -25,6 +25,7 @@ class Workstation : Form {
         try {
             var info=new ProcessStartInfo(Path.Combine(root,@"python\python.exe"),"-I -X utf8 -B \""+Path.Combine(root,@"app\desktop\desktop_service.py")+"\"");
             info.UseShellExecute=false; info.CreateNoWindow=true; info.RedirectStandardOutput=true;info.RedirectStandardError=true;info.RedirectStandardInput=true;
+            info.WorkingDirectory=root;
             info.EnvironmentVariables["RCBRIDGE_SESSION"]=key;
             service=new Process {StartInfo=info};service.Start();service.BeginErrorReadLine();
             string line;
@@ -40,5 +41,9 @@ class Workstation : Form {
             service.EnableRaisingEvents=true; service.Exited+=(s,e)=>{if(!closing && IsHandleCreated)BeginInvoke((Action)(()=>{if(!closing){MessageBox.Show("桥接控制服务已退出，请重新打开桌面端。",Text);Close();}}));};
         }catch(Exception e){if(!closing){MessageBox.Show(e.Message,"RCBridge · 启动失败",MessageBoxButtons.OK,MessageBoxIcon.Error);Close();}}
     }
-    [STAThread]static void Main(){Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new Workstation());}
+    [STAThread]static void Main(string[] args){
+        if(args.Length==2 && args[0]=="--profile")
+            Environment.SetEnvironmentVariable("RCBRIDGE_HOME",Path.GetFullPath(args[1]));
+        Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new Workstation());
+    }
 }

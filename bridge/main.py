@@ -27,13 +27,13 @@ log = logging.getLogger("ob11-bridge")
 # ============ 启动 / 停止 ============
 
 
-def _start_bridge():
+def _start_bridge(*, auto_start=False):
     with state.run_lock:
         if state.running:
             return
+        state.sender_instance = create_sender()
         state.running = True
     state.paused.clear()
-    state.sender_instance = create_sender()
 
     # 启动即把管理员名单（wxid → UID）重放一遍到 AstrBot 配置：
     # 桥接重启/换机后无需人工再同步。失败不影响启动。
@@ -51,7 +51,8 @@ def _start_bridge():
         state.ob_client_started = True
 
     state.stop_event.clear()
-    state.bridge_thread = threading.Thread(target=_bridge_loop, daemon=True, name="bridge")
+    state.bridge_thread = threading.Thread(target=_bridge_loop, kwargs={'wait_for_werc': auto_start},
+                                           daemon=True, name="bridge")
     state.bridge_thread.start()
     log.info("[Web] 已启动")
 
@@ -103,7 +104,7 @@ def _stop_bridge():
     log.info("[Web] 已停止")
 
 
-def _bridge_loop():
+def _bridge_loop(*, wait_for_werc=False):
     import ctypes
     ctypes.windll.ole32.CoInitialize(None)
 
@@ -128,12 +129,19 @@ def _bridge_loop():
     # WeFlow/Alpha 的自检差异（WeFlow 旧接口不带 talker 也能探活；
     # Alpha /api/v1/messages 必须带 talker，所以这里探 accounts 而不是 messages）
     # 统一封在 message_source.check() 里。
-    ok, status, msg = create_message_source().check()
-    if not ok:
-        log.error(f"❌ {msg}")
-        state.running = False
-        return
-    log.info(f"✅ {msg}")
+    source = create_message_source()
+    while state.running and not bridge.stop_requested.is_set():
+        ok, status, msg = source.check()
+        if ok:
+            log.info(f"✅ {msg}")
+            break
+        if not (wait_for_werc and source.name == 'werc' and (status in (0, 429) or 500 <= status < 600)):
+            log.error(f"❌ {msg}")
+            state.running = False
+            break
+        log.warning('自动启动：等待 WeRC 就绪（%s）', msg)
+        if state.stop_event.wait(5):
+            break
 
     while state.running and not bridge.stop_requested.is_set():
         try:

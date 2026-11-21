@@ -23,6 +23,6 @@ function switchTab(name) {
   document.getElementById('page-' + name).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active')});
   document.querySelector('[data-tab="' + name + '"]').classList.add('active');
-  if (name === 'settings') loadConfig();
+  if (name === 'settings') { loadStartup(); loadConfig(); }
   if (name === 'members') switchTabMembers();
 }

@@ -18,11 +18,15 @@ RCBridge 是一个 Windows 桌面桥接工具：通过 WeRC 接收微信消息�
 
 OneBot `reply` 支持微信原生文字引用，需要 WeRC 的引用接口支持按接收位置（`position`）定位原消息。合并事件引用最后一条可引用的原始文字。
 
+主动发送按当前账号的 WeRC 原生会话记录恢复目标，不按昵称匹配，也不重放旧消息。没有原生记录的会话无法确认；目前 WeRC 群事件不提供成员 ID，OneBot 以 `user_id: 0` 表示未知发送者。发送结果未知时不会自动重发。
+
 ### 快速开始
 
 1. 从 [Releases](../../releases) 下载 Windows x64 便携包。完整解压，运行顶层的 `RCBridge.exe`。
-2. 在已连接微信的 WeRC 中复制「Bot 接入」配置，在 RCBridge 的「连接设置」中导入，然后填写 OneBot v11 反向 WebSocket 地址及所需令牌。
+2. 在已连接微信的 WeRC 中复制「Bot 接入」配置，在 RCBridge 的「设置」中导入，然后填写 OneBot v11 反向 WebSocket 地址及所需令牌。
 3. 保存后关闭并重新打开 RCBridge，点击「启动桥接」。在总览确认两端已连接，再用测试联系人验证实际收发。
+
+「设置 → 启动」可分别开启 **Windows 登录后启动 RCBridge** 和 **启动 RCBridge 后自动开启桥接**。两项默认关闭；第一项仅适用于当前 Windows 用户。
 
 [详细使用与排错](docs/使用指南.md) · [变更记录](CHANGELOG.md) · [许可证](LICENSE)
 
@@ -42,11 +46,15 @@ The newer WeRC Bot preset includes group-name sync, the friend list, and the cat
 
 OneBot `reply` supports native WeChat text quotes with a WeRC build that can resolve the original message by receive `position`. A merged event quotes its last eligible original text message.
 
+Proactive sends resolve targets from the current account’s WeRC native observations, without matching display names or replaying old messages. Conversations without a matching native record cannot be resolved. WeRC group events currently lack member IDs; OneBot reports an unknown sender as `user_id: 0`. Unconfirmed sends are not retried automatically.
+
 ### Quick start
 
 1. Download the Windows x64 portable ZIP from [Releases](../../releases). Extract the entire ZIP and run `RCBridge.exe` at the top level.
-2. In WeRC, connect WeChat and copy the bot connection settings. Import them in RCBridge's Connection Settings, then enter the OneBot v11 reverse WebSocket URL and any required token.
+2. In WeRC, connect WeChat and copy the bot connection settings. Import them in RCBridge's Settings, then enter the OneBot v11 reverse WebSocket URL and any required token.
 3. Save, close and reopen RCBridge, then start the bridge. Check that both connections are up and verify message delivery with a test contact.
+
+**Settings → Startup** has separate options for opening RCBridge at Windows sign-in and starting the bridge when RCBridge opens. Both are off by default; sign-in startup applies to the current Windows user only.
 
 [Usage and troubleshooting (Chinese)](docs/使用指南.md) · [Changelog (Chinese)](CHANGELOG.md) · [License](LICENSE)
 

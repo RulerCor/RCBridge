@@ -4,13 +4,15 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler, Request
+from urllib.parse import parse_qs, urlsplit
 from websockets.sync.server import serve
-from test_werc import quoted, row
+from test_werc import _wxid_to_int, quoted, row
 
 
 def run(bundle):
     key=uuid.uuid4().hex; result=queue.Queue(); connected=threading.Event(); sent=[]
-    later = threading.Event(); finished = threading.Event()
+    allow_inbound = threading.Event(); later = threading.Event(); finished = threading.Event()
+    history = [row('known-private', position=2), row('sample@chatroom', type_=43, position=7)]
     originals = {pos: row(peer, position=pos) for pos, peer in
                  [(8, 'friend'), (9, 'other@chatroom'), (10, 'friend'), (11, 'friend')]}
     assert originals[8]['payload']['message']['text'] == originals[11]['payload']['message']['text']
@@ -40,6 +42,7 @@ def run(bundle):
                     # Flush complete frames through requests' fixed-size stream reads.
                     self.wfile.write((frame + ':' + ' '*256 + '\n\n').encode())
                     self.wfile.flush()
+                assert allow_inbound.wait(10)
                 emit(8, 9)
                 assert later.wait(10)
                 emit(10, 11)
@@ -48,8 +51,11 @@ def run(bundle):
                 return
             if self.path.startswith('/api/v1/messages/native?'):
                 # Discovery sees a known group while the imported contact snapshot is empty.
-                data = [row('sample@chatroom', type_=43)]
-                pos = 7 if data else 0
+                query = parse_qs(urlsplit(self.path).query)
+                assert query['account_id'] == ['test-account']
+                after, limit = int(query['after'][0]), int(query['limit'][0])
+                data = history[-limit:] if after == -1 else [x for x in history if x['position'] > after][:limit]
+                pos = data[-1]['position'] if data else max(after, 0)
                 self.reply({'data_mode':'native_observations','data':data,'next_cursor':pos})
             elif self.path.startswith('/api/v1/contacts?'):self.reply({'data':[]})
             elif self.path == '/api/v1/contacts/group-names?account_id=test-account':self.reply(group_response)
@@ -57,8 +63,14 @@ def run(bundle):
             elif self.path == '/api/v1/contacts/directory?account_id=test-account' and directory_enabled:self.reply(categorized)
             else:self.send_error(404)
         def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-            sent.append((self.path, body))
+            raw = self.rfile.read(int(self.headers['Content-Length']))
+            path = urlsplit(self.path).path
+            if path == '/api/v1/media/images':
+                sent.append((path, None))
+                self.send_error(415)
+                return
+            body = json.loads(raw)
+            sent.append((path, body))
             if self.path == '/api/v1/messages/send/quote':
                 m = body['message']
                 original = originals[m['position']]['payload']
@@ -68,21 +80,45 @@ def run(bundle):
                 status = 'unknown' if m['text'] == 'uncertain' else 'server_accepted'
                 self.reply({'data':{'state':status,'metadata':{'id':'test-quote'}}})
             else:
-                assert self.path == '/api/v1/messages/send-text'
-                self.reply({'data':{'state':'queued','metadata':{'id':'test-ticket'}}})
+                assert path == '/api/v1/messages/send-text'
+                code = {'invalid fields': 422, 'busy': 429}.get(body['text'])
+                if code:
+                    self.send_error(code)
+                else:
+                    self.reply({'data':{'state':'queued','metadata':{'id':'test-ticket'}}})
     def bot(ws):
         try:
             assert ws.request.headers["Authorization"] == "Bearer mock-onebot"
             connected.set()
+            def call(action, params=None, *, before_inbound=False):
+                ws.send(json.dumps({'action':action,'params':params or {},'echo':action}))
+                while True:
+                    response = json.loads(ws.recv(timeout=7))
+                    if before_inbound:
+                        assert response.get('post_type') != 'message', 'Old observations must not be forwarded'
+                    if response.get('echo') == action: return response
+
+            # A fresh bridge process and no incoming frames: WeRC alone retains both conversations.
+            for peer, action, key in [('known-private', 'send_private_msg', 'user_id'),
+                                      ('sample@chatroom', 'send_group_msg', 'group_id')]:
+                res = call(action, {key: _wxid_to_int(peer), 'message': 'before inbound'}, before_inbound=True)
+                assert res['status'] == 'async', res
+                assert sent[-1][1]['username'] == peer and sent[-1][1]['account_id'] == 'test-account'
+            for msg, http, code, phase in [('invalid fields', 422, 'invalid_request', 'send'),
+                    ('busy', 429, 'rate_limited', 'send'),
+                    ([{'type': 'image', 'data': {'file': 'base64://YQ=='}}], 415, 'unsupported_media', 'upload')]:
+                res = call('send_private_msg', {'user_id': _wxid_to_int('known-private'), 'message': msg}, before_inbound=True)
+                assert res['status'] == 'failed', res
+                assert res['data']['error'] == {'http_status': http, 'code': code, 'phase': phase}, res
+            allow_inbound.set()
             events = {}
             while len(events) < 2:
                 event = json.loads(ws.recv(timeout=12))
                 if event.get('post_type') == 'message': events[event['message_type']] = event
-            def call(action, params=None):
-                ws.send(json.dumps({'action':action,'params':params or {},'echo':action}))
-                while True:
-                    response = json.loads(ws.recv(timeout=7))
-                    if response.get('echo') == action: return response
+            group = events['group']
+            assert group['user_id'] == 0 and group['sender'] == {'user_id': 0, 'nickname': '未标识群成员'}, group
+            members = call('get_group_member_list', {'group_id': group['group_id']})['data']
+            assert all(member['user_id'] == group['self_id'] for member in members), members
             private = events['private']
             assert 'hello' in str(private['message'])
             response = call('get_friend_list')
@@ -111,6 +147,7 @@ def run(bundle):
                 assert body['message']['position'] == expected, body
             res = call('send_private_msg', {'user_id':private['user_id'], 'message':quoted(merged['message_id'], 'uncertain')})
             assert res['status'] == 'failed' and '原生引用发送未确认' in res['wording'], res
+            assert res['data']['error'] == {'phase': 'outbox', 'code': 'outbox_unknown'}, res
             res = call('send_private_msg', {'user_id':private['user_id'],'message':'offline reply'})
             assert res['status']=='async' and res['data']['receipts'][0]['task']=='test-ticket';result.put(True)
         except Exception as e:result.put(e)
@@ -197,10 +234,94 @@ def run(bundle):
             else:raise AssertionError('generic mode allowed AstrBot restart')
             assert json.load(opener.open(req,timeout=5))['ok'];out=result.get(timeout=17)
             if isinstance(out,Exception):raise out
-            assert [path for path, _ in sent] == ['/api/v1/messages/send/quote']*3 + ['/api/v1/messages/send-text'], sent
+            text, quote = '/api/v1/messages/send-text', '/api/v1/messages/send/quote'
+            assert [path for path, _ in sent] == [text]*4 + ['/api/v1/media/images'] + [quote]*3 + [text], sent
             assert sent[-1][1]['username'] == 'friend' and sent[-1][1]['text'] == 'offline reply'
-            print('PASS: routed friend/group IDs, directory, exact duplicate-text quotes, merge target, no fallback and ordinary send')
+            print('PASS: cold-start private/group sends, unknown group sender, directory, quote routing and no fallback')
         finally:
             proc.stdin.close();proc.wait(timeout=12);ws.shutdown();w.shutdown()
 
-if __name__=='__main__':run(Path(sys.argv[1]).resolve())
+def run_startup(bundle):
+    """The packaged service saves a startup preference and honors it on the next launch."""
+    key = uuid.uuid4().hex
+    checks = queue.Queue()
+    stream = threading.Event()
+
+    class StartupWeRC(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+
+        def do_GET(self):
+            path = urlsplit(self.path).path
+            if path == '/api/v1/messages/native/stream':
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.end_headers()
+                stream.set()
+                return
+            if path == '/api/v1/messages/native':
+                first = checks.empty()
+                checks.put(True)
+                if first:
+                    self.send_error(503)
+                    return
+                body = b'{"data_mode":"native_observations","data":[],"next_cursor":0}'
+            elif path == '/api/v1/contacts':
+                body = b'{"data":[]}'
+            else:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), StartupWeRC) as w, tempfile.TemporaryDirectory() as tmp:
+        threading.Thread(target=w.serve_forever, daemon=True).start()
+        path = Path(tmp) / 'config.json'
+        cfg = json.loads((bundle / 'app/bridge/config.example.json').read_text('utf8'))
+        cfg.pop('auto_start_bridge', None)  # older profiles have no flag
+        cfg.update(web_port=0, werc_account_id='test-account', werc_token='demo',
+                   werc_base_url=f'http://127.0.0.1:{w.server_port}', message_source='werc', send_method='werc',
+                   onebot_ws_url='ws://127.0.0.1:1/ws', astrbot_config_file='')
+        path.write_text(json.dumps(cfg), 'utf8')
+        opener = build_opener(ProxyHandler({}))
+        try:
+            for automatic in (False, True):
+                proc = subprocess.Popen([str(bundle/'python/python.exe'), '-I', '-B', '-X', 'utf8',
+                    str(bundle/'app/desktop/desktop_service.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, env=dict(os.environ, RCBRIDGE_SESSION=key, RCBRIDGE_HOME=tmp), text=True, encoding='utf8')
+                try:
+                    line = proc.stdout.readline(); assert line.startswith('RCBRIDGE_READY'), line
+                    base = 'http://127.0.0.1:' + line.split()[1]
+                    def call(url, data=None, authorized=True):
+                        body = json.dumps(data).encode() if data is not None else None
+                        headers = {'X-RCBridge-Session': key} if authorized else {}
+                        return json.load(opener.open(Request(base + url, data=body, headers=headers), timeout=5))
+                    settings = call('/api/startup')
+                    assert settings == {'ok': True, 'launch_at_logon': False, 'auto_start_bridge': automatic}, settings
+                    assert call('/status')['running'] == automatic
+                    if automatic:
+                        assert stream.wait(9), 'Automatic bridge did not recover from WeRC 503'
+                        assert checks.qsize() >= 3  # failed probe, successful probe, ready cursor
+                    else:
+                        assert checks.empty()
+                        for body, authorized, expected in [({'auto_start_bridge': True}, False, 403),
+                                                            ({'auto_start_bridge': 'true'}, True, 400)]:
+                            try: call('/api/startup', body, authorized=authorized)
+                            except HTTPError as e: assert e.code == expected
+                            else: raise AssertionError('Accepted an invalid startup setting')
+                        updated = call('/api/startup', {'auto_start_bridge': True})
+                        assert updated['auto_start_bridge'] and not updated['launch_at_logon']
+                        assert not call('/status')['running']  # next launch, not now
+                        assert json.loads(path.read_text('utf8')) == dict(cfg, auto_start_bridge=True)
+                finally:
+                    proc.stdin.close(); proc.wait(timeout=12)
+        finally:
+            w.shutdown()
+    print('PASS: saved startup preference, older profile default, automatic bridge on next launch, WeRC boot order')
+
+
+if __name__ == '__main__':
+    bundle = Path(sys.argv[1]).resolve()
+    run(bundle)
+    run_startup(bundle)

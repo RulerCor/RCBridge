@@ -773,7 +773,7 @@ class WeFlowBridge:
             # ① Alpha：事件里直接带 wxid —— 最权威，优先用。
             sender_wxid = (entry.get("sender_wxid") or "").strip()
             if entry.get("room_envelope"):
-                sender_wxid = "rcbridge:room-envelope:" + entry["session_id_data"]
+                sender_wxid = ""  # Native WeRC rooms expose no authenticated member ID.
             elif sender_wxid:
                 state.remember_person(sender_wxid, sender_name)
             else:
@@ -906,7 +906,8 @@ class WeFlowBridge:
         """连接消息源 SSE 推流（WeFlow / Alpha）。"""
         source = create_message_source()
         if source.name == "werc":
-            source.listen(self, state)
+            adapter = self.sender if isinstance(self.sender, type(source)) else source
+            adapter.listen(self, state)
             return
         sse_url = source.sse_url()
         # ⚠️ 日志里绝不打完整 URL：WeFlow 的 URL 里含 access_token 明文。

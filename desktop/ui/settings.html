@@ -1,6 +1,21 @@
 <div class="tab-page" id="page-settings">
-  <div class="header"><h1><span class="en">Settings</span><span class="cn">连接设置</span></h1></div>
+  <div class="header"><h1><span class="en">Settings</span><span class="cn">设置</span></h1></div>
+  <section class="card" aria-labelledby="startupTitle">
+    <h2 id="startupTitle">启动</h2>
+    <div class="startup-row">
+      <div><label for="launch_at_logon">Windows 登录后启动 RCBridge</label>
+        <p id="logonHelp">仅对当前 Windows 用户生效，使用这套本机资料。</p></div>
+      <input id="launch_at_logon" type="checkbox" role="switch" aria-describedby="logonHelp" disabled>
+    </div>
+    <div class="startup-row">
+      <div><label for="auto_start_bridge">启动 RCBridge 后自动开启桥接</label>
+        <p id="autoBridgeHelp">手动或随 Windows 打开 RCBridge 时均适用；下次启动生效。</p></div>
+      <input id="auto_start_bridge" type="checkbox" role="switch" aria-describedby="autoBridgeHelp" disabled>
+    </div>
+    <p class="startup-feedback" id="startupFeedback" role="status">读取启动设置…</p>
+  </section>
   <div class="card">
+    <h2>连接</h2>
     <h3>WeRC</h3>
     <p class="card-sub">在 WeRC 的「Bot 接入」复制配置，粘贴到这里。</p>
     <textarea id="wercBundle" rows="2" autocomplete="off" spellcheck="false" aria-label="WeRC 接入配置"></textarea>
@@ -12,5 +27,5 @@
     <summary>其他接入与端口</summary>
     <div id="advancedFields" class="form-grid tier-body"></div>
   </details>
-  <div class="save-bar"><button class="primary" id="saveConfigBtn" onclick="saveConfig()" disabled>保存</button><span class="sub" id="settingsHint">保存后重新打开 RCBridge。</span></div>
+  <div class="save-bar"><button class="primary" id="saveConfigBtn" onclick="saveConfig()" disabled>保存连接设置</button><span class="sub" id="settingsHint">保存后重新打开 RCBridge。</span></div>
 </div>

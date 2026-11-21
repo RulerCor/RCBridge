@@ -1,10 +1,13 @@
 """Isolated RCBridge desktop control service. Started/owned by the Windows shell."""
+import hashlib
 import hmac
 import json
 import logging
 import os
+import subprocess
 import sys
 import threading
+import winreg
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -27,9 +30,45 @@ def initialize(home):
     os.chdir(home)
 
 
-def make_handler(key):
+RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+
+
+class LogonStartup:
+    """Register only this profile in the current Windows user's Run key."""
+
+    def __init__(self, home, exe):
+        self.exe = exe
+        profile = os.path.normcase(str(home))
+        self.name = 'RCBridge.' + hashlib.sha256(profile.encode('utf8')).hexdigest()[:16]
+        self.command = subprocess.list2cmdline([str(exe), '--profile', str(home)])
+
+    def enabled(self):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+                value, kind = winreg.QueryValueEx(key, self.name)
+                return kind == winreg.REG_SZ and value == self.command
+        except FileNotFoundError:
+            return False
+
+    def set_enabled(self, enabled):
+        if enabled:
+            if not self.exe.is_file():
+                raise ValueError('找不到 RCBridge.exe，请从桌面程序打开设置。')
+            if len(self.command.encode('utf-16-le')) // 2 > 260:
+                raise ValueError('程序或资料目录路径过长，请移到较短的路径再开启自启。')
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, self.name, 0, winreg.REG_SZ, self.command)
+        else:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+                    winreg.DeleteValue(key, self.name)
+            except FileNotFoundError:
+                pass
+
+
+def make_handler(key, logon_startup):
     import config, state
-    from web_panel import WebHandler
+    from web_panel import WebHandler, _atomic_write_json, _read_config
     from werc_adapter import WeRC
     ui = HERE/'ui'
     page = (ui/'index.html').read_text('utf8')
@@ -65,6 +104,13 @@ def make_handler(key):
                 self.send_header('Content-Type',mime+'; charset=utf-8' if mime.startswith('text/') else mime)
                 self.send_header('Cache-Control','no-store');self.send_header('Content-Length',str(len(body)))
                 self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(body);return
+            if self.path == '/api/startup':
+                try:
+                    with self.server.edit_lock:
+                        self.send_json(self.startup_settings())
+                except OSError:
+                    self.send_json({'ok': False, 'error': '无法读取启动设置。'}, 400)
+                return
             if self.path == '/api/contact-directory':
                 from werc_adapter import WeRCError
                 try:
@@ -112,11 +158,36 @@ def make_handler(key):
             try: super().do_GET()
             except Exception as e: self.send_json({'ok':False,'error':str(e)},400)
 
+        def startup_settings(self):
+            return {'ok': True, 'launch_at_logon': logon_startup.enabled(),
+                    'auto_start_bridge': _read_config().get('auto_start_bridge') is True}
+
+        def save_startup(self):
+            count = int(self.headers.get('Content-Length', 0))
+            if not 0 < count <= 256:
+                raise ValueError('启动设置请求无效。')
+            change = json.loads(self.rfile.read(count))
+            if (not isinstance(change, dict) or len(change) != 1
+                    or not set(change) <= {'launch_at_logon', 'auto_start_bridge'}
+                    or type(next(iter(change.values()))) is not bool):
+                raise ValueError('每次只能保存一个启动开关。')
+            with self.server.edit_lock:
+                if 'launch_at_logon' in change:
+                    logon_startup.set_enabled(change['launch_at_logon'])
+                else:
+                    current = _read_config()
+                    current.update(change)
+                    _atomic_write_json(config.CONFIG_FILE, current)
+                return self.startup_settings()
+
         def do_POST(self):
             if not self.authorized() or not self.integration_allowed(): return
             try:
                 if self.path == '/start' and not state.running:
                     if 'werc' in (config.MESSAGE_SOURCE, config.SEND_METHOD): WeRC.from_config(config.config)
+                if self.path == '/api/startup':
+                    self.send_json(self.save_startup())
+                    return
                 if self.path == '/api/test-werc':
                     count=int(self.headers.get('Content-Length',0))
                     if not 0 < count < 16384: raise ValueError('配置长度无效')
@@ -151,13 +222,18 @@ def run():
     home=Path(os.environ.get('RCBRIDGE_HOME') or Path(os.environ['LOCALAPPDATA'])/'RCBridge').resolve()
     key=os.environ.pop('RCBRIDGE_SESSION');initialize(home)
     import config, state, exit_reason, main
-    from http.server import ThreadingHTTPServer
-    server=ThreadingHTTPServer(('127.0.0.1', int(config.WEB_PORT)),make_handler(key));server.edit_lock=threading.Lock()
+    logon_startup = LogonStartup(home, HERE.parent.parent / 'RCBridge.exe')
+    server=ThreadingHTTPServer(('127.0.0.1', int(config.WEB_PORT)),make_handler(key, logon_startup));server.edit_lock=threading.Lock()
     state._self_id_int=state._wxid_to_int(config.BOT_WXID or 'wechat_bot')
     exit_reason.install();exit_reason.set_phase('桌面控制台')
     def watch_owner():
         sys.stdin.buffer.read();server.shutdown()
     threading.Thread(target=watch_owner,daemon=True).start()
+    if config.config.get('auto_start_bridge') is True:
+        try:
+            main._start_bridge(auto_start=True)
+        except (ValueError, OSError) as e:
+            logging.getLogger('ob11-bridge').warning('自动启动桥接失败：%s', e)
     print('RCBRIDGE_READY '+str(server.server_port),flush=True)
     try: server.serve_forever(poll_interval=.15)
     finally:

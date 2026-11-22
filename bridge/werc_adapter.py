@@ -19,6 +19,7 @@ MEDIA = {'image': ('images', 'image'), 'file': ('files', 'file'), 'video': ('vid
 
 
 WECHAT_ID = re.compile(r'[A-Za-z0-9_.@-]{1,127}')
+WERC_ERROR_CODE = re.compile(r'[A-Za-z][A-Za-z0-9_.-]{0,63}\Z')
 HTTP_ERRORS = {
     422: ('invalid_request', '请求字段不符合 WeRC 接口要求'),
     429: ('rate_limited', 'WeRC 忙或已达限额，未自动重试'),
@@ -55,10 +56,14 @@ def onebot_segments(message, auto_escape=False):
 
 
 class WeRCError(ValueError):
-    def __init__(self, path, status):
+    def __init__(self, path, status, upstream_code=None):
         self.status = status
         self.code, detail = HTTP_ERRORS.get(status, ('http_error', '检查账号、授权范围及连接状态'))
-        super().__init__(f'WeRC {path}: HTTP {status}（{detail}）')
+        self.upstream_code = upstream_code if isinstance(upstream_code, str) and WERC_ERROR_CODE.fullmatch(upstream_code) else None
+        if self.upstream_code == 'RECEIVED_MEDIA_INVALID':
+            detail = '媒体元数据无效或不受支持，无需原样重试'
+        upstream = f'，错误码 {self.upstream_code}' if self.upstream_code else ''
+        super().__init__(f'WeRC {path}: HTTP {status}{upstream}（{detail}）')
 
 
 class WeRC:
@@ -88,7 +93,13 @@ class WeRC:
             response = session.request(method, self.base_url + '/api/v1/' + path, headers=headers,
                                        allow_redirects=False, timeout=(4, 35), **kw)
         if not 200 <= response.status_code < 300:
-            raise WeRCError(path, response.status_code)
+            try:
+                body = response.json()
+                error = body.get('error') if isinstance(body, dict) else None
+                upstream_code = error.get('code') if isinstance(error, dict) else None
+            except (ValueError, TypeError):
+                upstream_code = None
+            raise WeRCError(path, response.status_code, upstream_code)
         return response
 
     def page(self, after, limit=100):
@@ -308,7 +319,15 @@ class WeRC:
                 raise ValueError('仅接收 base64 或已配置附件目录内的文件')
             if path.stat().st_size > 8 * 1024**2: raise ValueError('附件超过本桥接 8 MiB 限制')
             raw = path.read_bytes(); filename = path.name
-        return self.request('POST', 'media/' + MEDIA[kind][0], params={'account_id': self.account}, files={'file': (filename, raw)}).json()['data']['id']
+        upload_kind, send_kind = MEDIA[kind]
+        file_part = (filename, raw)
+        if kind == 'image' and raw.startswith((b'GIF87a', b'GIF89a')):
+            # WeRC checks the filename as well as the bytes. Do not transcode the GIF.
+            upload_kind, send_kind = 'emoticons', 'emoticon'
+            file_part = (Path(filename).stem + '.gif', raw, 'image/gif')
+        asset_id = self.request('POST', 'media/' + upload_kind,
+                                params={'account_id': self.account}, files={'file': file_part}).json()['data']['id']
+        return send_kind, asset_id
 
     def send_onebot(self, action, params, state, config):
         receipts = []
@@ -344,7 +363,7 @@ class WeRC:
                     continue
                 elif kind in MEDIA:
                     if text.strip(): jobs.append(('text', text.strip()))
-                    text = ''; jobs.append((MEDIA[kind][1], (kind, d)))
+                    text = ''; jobs.append((kind, d))
                 else: raise ValueError(f'不支持的 OneBot 段：{kind}')
             if text.strip(): jobs.append(('text', text.strip()))
             if not jobs: raise ValueError('没有可发送内容')
@@ -357,8 +376,8 @@ class WeRC:
             else:
                 # Keep ordinary sends' existing upload-before-send behavior.
                 phase = 'upload'
-                jobs = [(kind, value if kind == 'text' else
-                         self._asset(*value, config.ASTRBOT_ATTACHMENTS)) for kind, value in jobs]
+                jobs = [(kind, value) if kind == 'text' else self._asset(kind, value, config.ASTRBOT_ATTACHMENTS)
+                        for kind, value in jobs]
             for kind, value in jobs:
                 key = uuid.uuid4().hex
                 if kind == 'quote':
@@ -373,7 +392,7 @@ class WeRC:
                     outcome = '普通发送'
                     if kind != 'text' and quote:
                         phase = 'upload'
-                        value = self._asset(*value, config.ASTRBOT_ATTACHMENTS)
+                        kind, value = self._asset(kind, value, config.ASTRBOT_ATTACHMENTS)
                     payload = {'text': value, 'wait_seconds': 2} if kind == 'text' else {'asset_id': value}
                     phase = 'send'
                     ticket = self.request('POST', 'messages/send-' + kind, headers={'Idempotency-Key':key}, json={'account_id':self.account, 'username':peer, **payload}).json()['data']
@@ -392,6 +411,8 @@ class WeRC:
             error = {'phase': phase, 'code': error_code}
             if isinstance(e, WeRCError):
                 error.update(code=e.code, http_status=e.status)
+                if e.upstream_code:
+                    error['werc_code'] = e.upstream_code
             detail = str(e)
             if phase == 'send' and (not isinstance(e, WeRCError) or e.status >= 500 or e.status == 408):
                 error['code'] = 'send_unconfirmed'

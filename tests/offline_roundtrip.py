@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 from urllib.request import build_opener, ProxyHandler, Request
 from urllib.parse import parse_qs, urlsplit
 from websockets.sync.server import serve
-from test_werc import _wxid_to_int, quoted, row
+from test_werc import GIF_B64, GIF_BYTES, _wxid_to_int, quoted, row
 
 
 def run(bundle):
@@ -32,8 +32,8 @@ def run(bundle):
     directory_enabled = True
     class Fake(BaseHTTPRequestHandler):
         def log_message(self,*a):pass
-        def reply(self,obj):
-            data=json.dumps(obj).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(data)
+        def reply(self,obj,status=200):
+            data=json.dumps(obj).encode();self.send_response(status);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(data)
         def do_GET(self):
             assert self.headers['Authorization']=='Bearer demo'
             if self.path.startswith('/api/v1/messages/native/stream?'):
@@ -70,8 +70,28 @@ def run(bundle):
                 sent.append((path, None))
                 self.send_error(415)
                 return
+            if path == '/api/v1/media/emoticons':
+                assert parse_qs(urlsplit(self.path).query) == {'account_id': ['test-account']}
+                assert self.headers['Content-Type'].startswith('multipart/form-data; boundary=')
+                assert b'name="file"; filename="looks-static.gif"' in raw
+                sent.append((path, None))
+                if b'Content-Type: image/gif\r\n\r\n' + GIF_BYTES + b'\r\n' in raw:
+                    self.reply({'data': {'id': 'test-emoticon'}}, 201)
+                else:
+                    assert b'Content-Type: image/gif\r\n\r\nGIF89a\r\n' in raw
+                    self.reply({'error': {'code': 'UNSUPPORTED_EMOTICON'}}, 415)
+                return
             body = json.loads(raw)
             sent.append((path, body))
+            if path == '/api/v1/messages/send-emoticon':
+                assert len(self.headers['Idempotency-Key']) == 32
+                assert body['account_id'] == 'test-account' and body['asset_id'] == 'test-emoticon'
+                if body['username'] == 'sample@chatroom':
+                    self.reply({'data': {'state': 'unknown', 'metadata': {'id': 'test-gif-unknown'}}})
+                else:
+                    assert body['username'] == 'known-private'
+                    self.reply({'error': {'code': 'CAPABILITY_NOT_IMPLEMENTED', 'message': 'upstream detail'}}, 501)
+                return
             if self.path == '/api/v1/messages/send/quote':
                 m = body['message']
                 original = originals[m['position']]['payload']
@@ -111,6 +131,24 @@ def run(bundle):
                 res = call('send_private_msg', {'user_id': _wxid_to_int('known-private'), 'message': msg}, before_inbound=True)
                 assert res['status'] == 'failed', res
                 assert res['data']['error'] == {'http_status': http, 'code': code, 'phase': phase}, res
+            image = {'type': 'image', 'data': {'file': 'base64://' + GIF_B64, 'name': 'looks-static.png'}}
+            for action, peer, key in [('send_group_msg', 'sample@chatroom', 'group_id'),
+                                      ('send_private_msg', 'known-private', 'user_id')]:
+                offset = len(sent)
+                trailing_text = {'type': 'text', 'data': {'text': 'must not send after unknown'}}
+                res = call(action, {key: _wxid_to_int(peer), 'message': [image, trailing_text]}, before_inbound=True)
+                assert res['status'] == 'failed', res
+                assert [p for p, _ in sent[offset:]] == ['/api/v1/media/emoticons', '/api/v1/messages/send-emoticon']
+                if key == 'group_id':
+                    assert res['data']['error'] == {'phase': 'outbox', 'code': 'outbox_unknown'}, res
+                    assert res['data']['receipts'] == [{'kind': 'emoticon', 'state': 'unknown', 'task': 'test-gif-unknown'}], res
+                else:
+                    error = res['data']['error']
+                    assert (error['phase'], error['http_status'], error['werc_code']) == ('send', 501, 'CAPABILITY_NOT_IMPLEMENTED'), res
+            invalid = {'type': 'image', 'data': {'file': 'base64://R0lGODlh', 'name': 'looks-static.png'}}
+            res = call('send_private_msg', {'user_id': _wxid_to_int('known-private'), 'message': [invalid]}, before_inbound=True)
+            assert res['data']['error'] == {'phase': 'upload', 'code': 'unsupported_media',
+                                           'http_status': 415, 'werc_code': 'UNSUPPORTED_EMOTICON'}, res
             allow_inbound.set()
             events = {}
             while len(events) < 2:
@@ -156,7 +194,7 @@ def run(bundle):
     with ThreadingHTTPServer(('127.0.0.1',0),Fake) as w, serve(bot,'127.0.0.1',0) as ws, tempfile.TemporaryDirectory() as tmp:
         for server in (w,ws):threading.Thread(target=server.serve_forever,daemon=True).start()
         cfg=json.loads((bundle/'app/bridge/config.example.json').read_text('utf8'));cfg.update(web_port=0,werc_account_id='test-account',werc_token='demo',werc_base_url=f'http://127.0.0.1:{w.server_port}/api/v1',message_source='werc',send_method='werc',buffer_seconds=0.1,onebot_token="mock-onebot",onebot_ws_url=f'ws://127.0.0.1:{ws.socket.getsockname()[1]}/ws',bot_nicknames=[],bot_wxid='',astrbot_config_file='');(Path(tmp)/'config.json').write_text(json.dumps(cfg),'utf8')
-        proc=subprocess.Popen([str(bundle/'python/python.exe'),'-I','-B','-X','utf8',str(bundle/'app/desktop/desktop_service.py')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=dict(os.environ,RCBRIDGE_SESSION=key,RCBRIDGE_HOME=tmp),text=True,encoding='utf8')
+        proc=subprocess.Popen([str(bundle/'python/python.exe'),'-I','-B','-X','utf8',str(bundle/'app/desktop/desktop_service.py')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env=dict(os.environ,RCBRIDGE_SESSION=key,RCBRIDGE_HOME=tmp),text=True,encoding='utf8')
         try:
             line=proc.stdout.readline();assert line.startswith('RCBRIDGE_READY'),line
             req=Request('http://127.0.0.1:'+line.split()[1]+'/start',method='POST',headers={'X-RCBridge-Session':key});opener=build_opener(ProxyHandler({}));
@@ -236,11 +274,23 @@ def run(bundle):
             assert json.load(opener.open(req,timeout=5))['ok'];out=result.get(timeout=17)
             if isinstance(out,Exception):raise out
             text, quote = '/api/v1/messages/send-text', '/api/v1/messages/send/quote'
-            assert [path for path, _ in sent] == [text]*4 + ['/api/v1/media/images'] + [quote]*3 + [text], sent
+            upload_gif, send_gif = '/api/v1/media/emoticons', '/api/v1/messages/send-emoticon'
+            expected = [text]*4 + ['/api/v1/media/images'] + [upload_gif, send_gif]*2 + [upload_gif] + [quote]*3 + [text]
+            assert [path for path, _ in sent] == expected, sent
             assert sent[-1][1]['username'] == 'friend' and sent[-1][1]['text'] == 'offline reply'
-            print('PASS: cold-start private/group sends, unknown group sender, directory, quote routing and no fallback')
+            print('PASS: cold-start routing, directory, native GIF upload/send, WeRC errors, quote routing and no fallback')
         finally:
-            proc.stdin.close();proc.wait(timeout=12);ws.shutdown();w.shutdown()
+            finished.set()
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=12)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise
+            finally:
+                ws.shutdown()
+                w.shutdown()
 
 @contextmanager
 def packaged_service(bundle, profile):
@@ -248,7 +298,7 @@ def packaged_service(bundle, profile):
     opener = build_opener(ProxyHandler({}))
     with subprocess.Popen([str(bundle/'python/python.exe'), '-I', '-B', '-X', 'utf8',
             str(bundle/'app/desktop/desktop_service.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=dict(os.environ, RCBRIDGE_SESSION=key, RCBRIDGE_HOME=str(profile)),
+            stderr=subprocess.DEVNULL, env=dict(os.environ, RCBRIDGE_SESSION=key, RCBRIDGE_HOME=str(profile)),
             text=True, encoding='utf8') as proc:
         try:
             line = proc.stdout.readline(); assert line.startswith('RCBRIDGE_READY'), line

@@ -1,4 +1,5 @@
 """Offline adapter contract checks. No network, secrets or WeChat required."""
+import base64
 import json
 from pathlib import Path
 import sys
@@ -21,6 +22,10 @@ def row(peer='friend', type_=1, position=7, server_id=None):
             'route':{'sender':peer,'receiver':'me','conversation':peer},
             'message':{'message_type':type_,'text':'hello',
                        'native_message_id': server_id if server_id is not None else str(2**53 + position)}}}
+
+
+GIF_B64 = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+GIF_BYTES = base64.b64decode(GIF_B64)
 
 
 def quoted(mid=12, text='reply'):
@@ -153,10 +158,78 @@ class Contract(unittest.TestCase):
                 self.assertIn(f'[{phase}/{code}]', log.output[-1])
                 self.w.request.assert_called_once()
                 self.assertEqual(self.w.request.call_args.args, ('POST', path))
+    def test_http_error_preserves_only_safe_upstream_code(self):
+        client = WeRC('http://127.0.0.1:5031', 'test-only', 'test-account')
+        cases = [
+            ({'error': {'code': 'RECEIVED_MEDIA_INVALID', 'message': 'private content'}}, 'RECEIVED_MEDIA_INVALID'),
+            ({'error': {'code': 'INVALID\nprivate content'}}, None),
+            ({'error': {'code': 'X' * 65}}, None),
+            ({'error': None}, None),
+            ([], None),
+            (ValueError('invalid JSON'), None),
+        ]
+        for body, code in cases:
+            response = Mock(status_code=422)
+            if isinstance(body, Exception): response.json.side_effect = body
+            else: response.json.return_value = body
+            with self.subTest(code=code), patch('werc_adapter.requests.Session') as session:
+                session.return_value.__enter__.return_value.request.return_value = response
+                with self.assertRaises(WeRCError) as caught:
+                    client.request('POST', 'messages/native/7/image')
+                self.assertEqual(caught.exception.code, 'invalid_request')
+                self.assertEqual(caught.exception.upstream_code, code)
+                self.assertNotIn('private content', str(caught.exception))
+                if code:
+                    self.assertIn(code, str(caught.exception))
+                    self.assertIn('无需原样重试', str(caught.exception))
+    def test_send_uncertain_keeps_upstream_code(self):
+        self.w.request.side_effect = WeRCError('messages/send-text', 503, 'NATIVE_DISCONNECTED')
+        with self.assertLogs('ob11-bridge', 'WARNING') as log:
+            result = self.send('hello')
+        self.assertEqual(result['data']['error'], {
+            'phase': 'send', 'code': 'send_unconfirmed', 'http_status': 503,
+            'werc_code': 'NATIVE_DISCONNECTED',
+        })
+        self.assertIn('NATIVE_DISCONNECTED', result['wording'])
+        self.assertIn('NATIVE_DISCONNECTED', log.output[-1])
     def test_media_upload_before_submit(self):
         def response(data):m=Mock();m.json.return_value={'data':data};return m
         for kind,plural,endpoint in [('image','images','image'),('file','files','file'),('video','videos','video'),('record','audio','voice')]:
             self.w.request.reset_mock();self.w.request.side_effect=[response({'id':'asset'}),response({'state':'recipient_confirmed'})];r=self.send([{'type':kind,'data':{'file':'base64://YQ=='}}]);self.assertEqual(r['status'],'ok');self.assertEqual([c.args[1] for c in self.w.request.call_args_list],['media/'+plural,'messages/send-'+endpoint]);self.assertEqual(self.w.request.call_args.kwargs['json']['asset_id'],'asset')
+    def test_image_content_routes_gif_and_preserves_static_image_route(self):
+        with TemporaryDirectory() as folder:
+            self.cfg.ASTRBOT_ATTACHMENTS = folder
+            local = Path(folder) / 'no-gif-extension.png'
+            local.write_bytes(b'GIF87a' + GIF_BYTES[6:])
+            cases = [
+                ({'file': 'base64://' + GIF_B64, 'name': 'pretend.jpg'}, GIF_BYTES, 'emoticons', 'emoticon', 'pretend.gif'),
+                ({'file': str(local)}, local.read_bytes(), 'emoticons', 'emoticon', 'no-gif-extension.gif'),
+                ({'file': 'base64:///9j/4A==', 'name': 'pretend.gif'}, b'\xff\xd8\xff\xe0', 'images', 'image', 'pretend.gif'),
+                ({'file': 'base64://iVBORw0KGgo='}, b'\x89PNG\r\n\x1a\n', 'images', 'image', 'attachment.png'),
+            ]
+            for data, raw, upload, send, filename in cases:
+                with self.subTest(data=data):
+                    self.w.request.reset_mock()
+                    self.w.request.side_effect = [Mock(**{'json.return_value': {'data': {'id': 'test-asset'}}}),
+                                                  Mock(**{'json.return_value': {'data': {'state': 'server_accepted'}}})]
+                    result = self.send([{'type': 'image', 'data': data}])
+                    self.assertEqual(result['data']['receipts'][0]['kind'], send)
+                    up, post = self.w.request.call_args_list
+                    self.assertEqual(up.args, ('POST', 'media/' + upload))
+                    expected = (filename, raw, 'image/gif') if send == 'emoticon' else (filename, raw)
+                    self.assertEqual(up.kwargs['files'], {'file': expected})
+                    self.assertEqual(post.args, ('POST', 'messages/send-' + send))
+                    self.assertEqual(post.kwargs['json'], {'account_id': 'test-account', 'username': 'friend', 'asset_id': 'test-asset'})
+
+    def test_gif_after_quote_uses_native_emoticon_route(self):
+        self.w.request.side_effect = [Mock(**{'json.return_value': {'data': {'state': 'server_accepted'}}}),
+                                      Mock(**{'json.return_value': {'data': {'id': 'test-asset'}}}),
+                                      Mock(**{'json.return_value': {'data': {'state': 'queued'}}})]
+        result = self.send(quoted() + [{'type': 'image', 'data': {'file': 'base64://' + GIF_B64}}])
+        self.assertEqual(result['status'], 'async')
+        self.assertEqual([c.args[1] for c in self.w.request.call_args_list],
+                         ['messages/send/quote', 'media/emoticons', 'messages/send-emoticon'])
+
     def test_reject_external_media(self):
         self.assertEqual(self.send([{'type':'file','data':{'file':'https://invalid.invalid/remote'}}])['status'],'failed');self.w.request.assert_not_called()
 

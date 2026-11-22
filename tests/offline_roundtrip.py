@@ -1,5 +1,6 @@
 """Exercise the packaged service with fake loopback WeRC + AstrBot; never loads a user profile."""
-import json, os, queue, subprocess, sys, tempfile, threading, time, uuid
+import json, os, queue, socket, subprocess, sys, tempfile, threading, time, uuid
+from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.error import HTTPError
@@ -241,9 +242,37 @@ def run(bundle):
         finally:
             proc.stdin.close();proc.wait(timeout=12);ws.shutdown();w.shutdown()
 
-def run_startup(bundle):
-    """The packaged service saves a startup preference and honors it on the next launch."""
+@contextmanager
+def packaged_service(bundle, profile):
     key = uuid.uuid4().hex
+    opener = build_opener(ProxyHandler({}))
+    with subprocess.Popen([str(bundle/'python/python.exe'), '-I', '-B', '-X', 'utf8',
+            str(bundle/'app/desktop/desktop_service.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=dict(os.environ, RCBRIDGE_SESSION=key, RCBRIDGE_HOME=str(profile)),
+            text=True, encoding='utf8') as proc:
+        try:
+            line = proc.stdout.readline(); assert line.startswith('RCBRIDGE_READY'), line
+            base = 'http://127.0.0.1:' + line.split()[1]
+
+            def call(url, data=None, authorized=True):
+                body = json.dumps(data).encode() if data is not None else None
+                headers = {'X-RCBridge-Session': key} if authorized else {}
+                return json.load(opener.open(Request(base + url, data=body, headers=headers), timeout=5))
+
+            yield call
+        finally:
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=12)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise
+
+
+def run_startup(bundle, *, retry_manual=False):
+    """Exercise startup preferences or an explicit retry after a failed WeRC probe."""
+    ready = threading.Event()
     checks = queue.Queue()
     stream = threading.Event()
 
@@ -261,7 +290,8 @@ def run_startup(bundle):
             if path == '/api/v1/messages/native':
                 first = checks.empty()
                 checks.put(True)
-                if first:
+                unavailable = not ready.is_set() if retry_manual else first
+                if unavailable:
                     self.send_error(503)
                     return
                 body = b'{"data_mode":"native_observations","data":[],"next_cursor":0}'
@@ -275,28 +305,24 @@ def run_startup(bundle):
             self.end_headers()
             self.wfile.write(body)
 
-    with ThreadingHTTPServer(('127.0.0.1', 0), StartupWeRC) as w, tempfile.TemporaryDirectory() as tmp:
+    with (ThreadingHTTPServer(('127.0.0.1', 0), StartupWeRC) as w,
+          socket.socket() as listener, tempfile.TemporaryDirectory() as tmp):
+        # Reserve a port but don't listen until both services are ready.
+        listener.bind(('127.0.0.1', 0))
         threading.Thread(target=w.serve_forever, daemon=True).start()
         path = Path(tmp) / 'config.json'
         cfg = json.loads((bundle / 'app/bridge/config.example.json').read_text('utf8'))
         cfg.pop('auto_start_bridge', None)  # older profiles have no flag
         cfg.update(web_port=0, werc_account_id='test-account', werc_token='demo',
                    werc_base_url=f'http://127.0.0.1:{w.server_port}', message_source='werc', send_method='werc',
-                   onebot_ws_url='ws://127.0.0.1:1/ws', astrbot_config_file='')
+                   onebot_ws_url=f'ws://127.0.0.1:{listener.getsockname()[1]}/ws', astrbot_config_file='')
         path.write_text(json.dumps(cfg), 'utf8')
-        opener = build_opener(ProxyHandler({}))
         try:
+            if retry_manual:
+                run_manual_retry(tmp, bundle, listener, ready, stream, checks)
+                return
             for automatic in (False, True):
-                proc = subprocess.Popen([str(bundle/'python/python.exe'), '-I', '-B', '-X', 'utf8',
-                    str(bundle/'app/desktop/desktop_service.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, env=dict(os.environ, RCBRIDGE_SESSION=key, RCBRIDGE_HOME=tmp), text=True, encoding='utf8')
-                try:
-                    line = proc.stdout.readline(); assert line.startswith('RCBRIDGE_READY'), line
-                    base = 'http://127.0.0.1:' + line.split()[1]
-                    def call(url, data=None, authorized=True):
-                        body = json.dumps(data).encode() if data is not None else None
-                        headers = {'X-RCBridge-Session': key} if authorized else {}
-                        return json.load(opener.open(Request(base + url, data=body, headers=headers), timeout=5))
+                with packaged_service(bundle, tmp) as call:
                     settings = call('/api/startup')
                     assert settings == {'ok': True, 'launch_at_logon': False, 'auto_start_bridge': automatic}, settings
                     assert call('/status')['running'] == automatic
@@ -314,14 +340,54 @@ def run_startup(bundle):
                         assert updated['auto_start_bridge'] and not updated['launch_at_logon']
                         assert not call('/status')['running']  # next launch, not now
                         assert json.loads(path.read_text('utf8')) == dict(cfg, auto_start_bridge=True)
-                finally:
-                    proc.stdin.close(); proc.wait(timeout=12)
         finally:
             w.shutdown()
     print('PASS: saved startup preference, older profile default, automatic bridge on next launch, WeRC boot order')
+
+
+def run_manual_retry(profile, bundle, listener, ready, stream, checks):
+    replies = queue.Queue()
+
+    def onebot(ws):
+        ws.send(json.dumps({'action': 'get_login_info', 'echo': 'startup-retry'}))
+        replies.put(json.loads(ws.recv(timeout=4)))
+        for _ in ws:
+            pass
+
+    with packaged_service(bundle, profile) as call:
+        assert call('/start', {})['ok']
+        checks.get(timeout=5)
+        deadline = time.monotonic() + 5
+        while call('/status')['running']:
+            assert time.monotonic() < deadline, 'First start did not fail on WeRC 503'
+            time.sleep(.05)
+        assert not call('/status')['ob_connected'] and not stream.is_set()
+        # Allow the old client's 5-second reconnect wait to elapse. Otherwise
+        # a retry could appear to work by reviving the still-sleeping thread.
+        time.sleep(5.5)
+        listener.listen()
+        with serve(onebot, sock=listener) as ws:
+            thread = threading.Thread(target=ws.serve_forever, daemon=True)
+            thread.start()
+            try:
+                ready.set()
+                assert call('/start', {})['ok']
+                assert stream.wait(5), 'Second start did not connect to WeRC'
+                try:
+                    response = replies.get(timeout=5)
+                except queue.Empty:
+                    raise AssertionError('OneBot did not connect after the second Start') from None
+                assert response['echo'] == 'startup-retry' and response['retcode'] == 0, response
+                assert call('/status')['ob_connected']
+            finally:
+                call('/stop', {})
+                ws.shutdown()
+                thread.join()
+    print('PASS: manual startup retry after WeRC and OneBot were both unavailable')
 
 
 if __name__ == '__main__':
     bundle = Path(sys.argv[1]).resolve()
     run(bundle)
     run_startup(bundle)
+    run_startup(bundle, retry_manual=True)

@@ -56,6 +56,9 @@ async def _ob_client_main():
                 }
             ) as ws:
                 state._ob_ws = ws
+                # A Stop during the handshake may not have had a socket to close.
+                if not state.running:
+                    break
                 state._ob_ws_ready.set()
                 log.info(f"[OB11] ✅ 已连接到 AstrBot")
 

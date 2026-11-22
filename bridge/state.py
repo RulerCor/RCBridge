@@ -213,7 +213,6 @@ def member_count_of_group(username: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-ob_client_started = False
 ob_thread = None       # OneBot 客户端线程引用（停止时用来等待它退出）
 
 # ============ 消息 ID 与「引用回复」支持 ============

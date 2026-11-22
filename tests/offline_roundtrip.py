@@ -1,5 +1,5 @@
 """Exercise the packaged service with fake loopback WeRC + AstrBot; never loads a user profile."""
-import json, os, queue, socket, subprocess, sys, tempfile, threading, time, uuid
+import base64, json, os, queue, socket, subprocess, sys, tempfile, threading, time, uuid
 from contextlib import contextmanager
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
@@ -13,10 +13,21 @@ from test_werc import GIF_B64, GIF_BYTES, _wxid_to_int, quoted, row
 def run(bundle):
     key=uuid.uuid4().hex; result=queue.Queue(); connected=threading.Event(); sent=[]
     allow_inbound = threading.Event(); later = threading.Event(); finished = threading.Event()
+    receive_images = threading.Event(); image_calls = []
+    png_b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN0kAAAAASUVORK5CYII='
+    image_errors = {
+        12: (422, 'RECEIVED_MEDIA_INVALID', False),
+        13: (429, 'RECEIVED_MEDIA_BUSY', False),
+        14: (503, 'NATIVE_DISCONNECTED', False),
+        15: (422, 'OTHER_INVALID', True),  # 422 still must not repeat
+    }
     history = [row('known-private', position=2), row('sample@chatroom', type_=43, position=7)]
     originals = {pos: row(peer, position=pos) for pos, peer in
                  [(8, 'friend'), (9, 'other@chatroom'), (10, 'friend'), (11, 'friend')]}
     assert originals[8]['payload']['message']['text'] == originals[11]['payload']['message']['text']
+    originals.update({pos: row('friend', type_=3, position=pos) for pos in range(12, 17)})
+    originals[17] = row('friend', position=17)
+    originals[17]['payload']['message']['text'] = 'image batch marker'
     group_response = {'account_id':'test-account', 'data':{'sample@chatroom':'Synced title','directory-only@chatroom':'Directory only'}}
     friend_response = {'account_id':'test-account','data_mode':'local_friend_directory','data':[
         {'username':'friend','nickname':'Test friend','remark':'Test remark'},
@@ -47,8 +58,16 @@ def run(bundle):
                 emit(8, 9)
                 assert later.wait(10)
                 emit(10, 11)
+                if receive_images.wait(12):
+                    emit(12, 12, 13, 13, 14, 15, 16, 17)
                 # Keep the stream open until after the requests, so it never replays.
                 finished.wait(12)
+                return
+            if urlsplit(self.path).path == '/api/v1/messages/native/16/image':
+                assert parse_qs(urlsplit(self.path).query) == {'account_id': ['test-account']}
+                image_calls.append(('GET', 16))
+                self.send_response(200); self.send_header('Content-Type', 'image/png'); self.end_headers()
+                self.wfile.write(base64.b64decode(png_b64))
                 return
             if self.path.startswith('/api/v1/messages/native?'):
                 # Discovery sees a known group while the imported contact snapshot is empty.
@@ -66,6 +85,18 @@ def run(bundle):
         def do_POST(self):
             raw = self.rfile.read(int(self.headers['Content-Length']))
             path = urlsplit(self.path).path
+            if path.startswith('/api/v1/messages/native/') and path.endswith('/image'):
+                pos = int(path.split('/')[-2])
+                assert self.headers['Authorization'] == 'Bearer demo'
+                assert parse_qs(urlsplit(self.path).query) == {'account_id': ['test-account']}
+                image_calls.append(('POST', pos))
+                if pos in image_errors:
+                    status, code, retryable = image_errors[pos]
+                    self.reply({'error': {'code': code, 'retryable': retryable, 'message': 'do not log payload'}}, status)
+                else:
+                    assert pos == 16
+                    self.reply({'data': {'id': 'preview'}, 'sent': False})
+                return
             if path == '/api/v1/media/images':
                 sent.append((path, None))
                 self.send_error(415)
@@ -188,7 +219,15 @@ def run(bundle):
             assert res['status'] == 'failed' and '原生引用发送未确认' in res['wording'], res
             assert res['data']['error'] == {'phase': 'outbox', 'code': 'outbox_unknown'}, res
             res = call('send_private_msg', {'user_id':private['user_id'],'message':'offline reply'})
-            assert res['status']=='async' and res['data']['receipts'][0]['task']=='test-ticket';result.put(True)
+            assert res['status']=='async' and res['data']['receipts'][0]['task']=='test-ticket'
+            receive_images.set()
+            while True:
+                event = json.loads(ws.recv(timeout=7))
+                if event.get('post_type') == 'message' and 'image batch marker' in event['raw_message']:
+                    break
+            assert [s for s in event['message'] if s['type'] == 'image'] == [
+                {'type': 'image', 'data': {'file': 'base64://' + png_b64}}], event
+            result.put(True)
         except Exception as e:result.put(e)
         finally: finished.set()
     with ThreadingHTTPServer(('127.0.0.1',0),Fake) as w, serve(bot,'127.0.0.1',0) as ws, tempfile.TemporaryDirectory() as tmp:
@@ -278,8 +317,18 @@ def run(bundle):
             expected = [text]*4 + ['/api/v1/media/images'] + [upload_gif, send_gif]*2 + [upload_gif] + [quote]*3 + [text]
             assert [path for path, _ in sent] == expected, sent
             assert sent[-1][1]['username'] == 'friend' and sent[-1][1]['text'] == 'offline reply'
-            print('PASS: cold-start routing, directory, native GIF upload/send, WeRC errors, quote routing and no fallback')
+            assert image_calls == [('POST', i) for i in range(12, 17)] + [('GET', 16)], image_calls
+            dashboard = json.load(opener.open(Request(base+'/status', headers=headers), timeout=5))['log']
+            for status, code, retryable in image_errors.values():
+                logs = [line for line in dashboard.splitlines() if code in line]
+                assert len(logs) == 1, logs
+                assert ('取图暂忙' if status == 429 else '取图不可重试') in logs[0], logs
+                assert f'HTTP {status}' in logs[0] and f'retryable={str(retryable).lower()}' in logs[0], logs
+                assert '未自动重试' in logs[0], logs
+            assert 'do not log payload' not in dashboard
+            print('PASS: cold-start routing, GIF send, quote routing, WeRC 1.2.3 image errors and no retry')
         finally:
+            receive_images.set()
             finished.set()
             proc.stdin.close()
             try:

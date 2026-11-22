@@ -158,17 +158,18 @@ class Contract(unittest.TestCase):
                 self.assertIn(f'[{phase}/{code}]', log.output[-1])
                 self.w.request.assert_called_once()
                 self.assertEqual(self.w.request.call_args.args, ('POST', path))
-    def test_http_error_preserves_only_safe_upstream_code(self):
+    def test_http_error_preserves_only_safe_upstream_fields(self):
         client = WeRC('http://127.0.0.1:5031', 'test-only', 'test-account')
         cases = [
-            ({'error': {'code': 'RECEIVED_MEDIA_INVALID', 'message': 'private content'}}, 'RECEIVED_MEDIA_INVALID'),
-            ({'error': {'code': 'INVALID\nprivate content'}}, None),
-            ({'error': {'code': 'X' * 65}}, None),
-            ({'error': None}, None),
-            ([], None),
-            (ValueError('invalid JSON'), None),
+            ({'error': {'code': 'RECEIVED_MEDIA_INVALID', 'message': 'private content', 'retryable': False}}, 'RECEIVED_MEDIA_INVALID', False),
+            ({'error': {'code': 'INVALID\nprivate content', 'retryable': 'false'}}, None, None),
+            ({'error': {'code': 'X' * 65, 'retryable': True}}, None, True),
+            ({'error': {'retryable': 0}}, None, None),
+            ({'error': None}, None, None),
+            ([], None, None),
+            (ValueError('invalid JSON'), None, None),
         ]
-        for body, code in cases:
+        for body, code, retryable in cases:
             response = Mock(status_code=422)
             if isinstance(body, Exception): response.json.side_effect = body
             else: response.json.return_value = body
@@ -178,10 +179,26 @@ class Contract(unittest.TestCase):
                     client.request('POST', 'messages/native/7/image')
                 self.assertEqual(caught.exception.code, 'invalid_request')
                 self.assertEqual(caught.exception.upstream_code, code)
+                self.assertIs(caught.exception.retryable, retryable)
                 self.assertNotIn('private content', str(caught.exception))
                 if code:
                     self.assertIn(code, str(caught.exception))
-                    self.assertIn('无需原样重试', str(caught.exception))
+                    self.assertIn('媒体元数据无效', str(caught.exception))
+
+    def test_download_failure_never_repeats_post_or_reads_after_a_rejected_post(self):
+        path = 'messages/native/7/image'
+        for method, status, code in [('POST', 422, 'RECEIVED_MEDIA_INVALID'),
+                                      ('POST', 429, 'RECEIVED_MEDIA_BUSY'),
+                                      ('GET', 503, 'NATIVE_DISCONNECTED')]:
+            self.w.request.reset_mock()
+            error = WeRCError(path, status, code, retryable=False)
+            self.w.request.side_effect = [error] if method == 'POST' else [Mock(), error]
+            with self.subTest(method=method, status=status), self.assertRaises(WeRCError) as caught:
+                self.w.download_media('werc-image:7')
+            self.assertIs(caught.exception, error)
+            self.assertEqual([c.args for c in self.w.request.call_args_list],
+                             [('POST', path)] if method == 'POST' else [('POST', path), ('GET', path)])
+
     def test_send_uncertain_keeps_upstream_code(self):
         self.w.request.side_effect = WeRCError('messages/send-text', 503, 'NATIVE_DISCONNECTED')
         with self.assertLogs('ob11-bridge', 'WARNING') as log:

@@ -1,5 +1,9 @@
 # RCBridge 变更记录
 
+## 0.4.1 — 2026-11-22
+
+- 兼容 WeRC v1.2.3 的接收图片错误：运行日志保留 `RECEIVED_MEDIA_INVALID` 和 `retryable`；HTTP 422 或明确不可重试时不重试同一条，HTTP 429 单独标为取图暂忙。失败不影响后续图片。
+
 ## 0.4.0 — 2026-11-22
 
 - WeRC 发送模式按文件内容识别 OneBot `image` 段中的 GIF，走原生表情接口；JPG、PNG 的发送方式不变。

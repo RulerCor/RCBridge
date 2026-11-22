@@ -56,12 +56,15 @@ def onebot_segments(message, auto_escape=False):
 
 
 class WeRCError(ValueError):
-    def __init__(self, path, status, upstream_code=None):
+    def __init__(self, path, status, upstream_code=None, *, retryable=None):
         self.status = status
         self.code, detail = HTTP_ERRORS.get(status, ('http_error', '检查账号、授权范围及连接状态'))
         self.upstream_code = upstream_code if isinstance(upstream_code, str) and WERC_ERROR_CODE.fullmatch(upstream_code) else None
+        self.retryable = retryable if type(retryable) is bool else None
         if self.upstream_code == 'RECEIVED_MEDIA_INVALID':
-            detail = '媒体元数据无效或不受支持，无需原样重试'
+            detail = '媒体元数据无效或不受支持'
+        elif self.upstream_code == 'RECEIVED_MEDIA_BUSY':
+            detail = '另一项媒体下载正在进行'
         upstream = f'，错误码 {self.upstream_code}' if self.upstream_code else ''
         super().__init__(f'WeRC {path}: HTTP {status}{upstream}（{detail}）')
 
@@ -96,10 +99,11 @@ class WeRC:
             try:
                 body = response.json()
                 error = body.get('error') if isinstance(body, dict) else None
-                upstream_code = error.get('code') if isinstance(error, dict) else None
+                if not isinstance(error, dict):
+                    error = {}
             except (ValueError, TypeError):
-                upstream_code = None
-            raise WeRCError(path, response.status_code, upstream_code)
+                error = {}
+            raise WeRCError(path, response.status_code, error.get('code'), retryable=error.get('retryable'))
         return response
 
     def page(self, after, limit=100):
@@ -266,6 +270,8 @@ class WeRC:
         prefix, _, pos = url.partition(':')
         if prefix != 'werc-image' or not pos.isdecimal(): raise ValueError('无效原生图片位置')
         path = f'messages/native/{int(pos)}/image'; q = {'account_id': self.account}
+        # Exactly one download attempt. A rejected POST must not read a stale
+        # preview; a failed GET must not trigger a second POST.
         self.request('POST', path, params=q)
         return self.request('GET', path, params=q)
 

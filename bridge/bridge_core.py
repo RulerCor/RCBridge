@@ -26,6 +26,7 @@ import config
 import wx_msg_parser
 from message_source import create_message_source, extract_media_url, extract_message_id
 from ob_protocol import push_event, make_message_event
+from werc_adapter import WeRCError
 
 log = logging.getLogger("ob11-bridge")
 
@@ -1210,6 +1211,16 @@ class WeFlowBridge:
             log.info(f"🖼️ 图片已就绪（{len(img.content) / 1024:.0f}KB，"
                      f"{img.headers.get('Content-Type', '未知类型')}）")
             return base64.b64encode(img.content).decode()
+        except WeRCError as e:
+            if e.status == 429:
+                summary = 'WeRC 取图暂忙，已跳过本次下载'
+            elif e.status == 422 or e.retryable is False or e.upstream_code == 'RECEIVED_MEDIA_INVALID':
+                summary = 'WeRC 取图不可重试，已跳过该图片'
+            else:
+                summary = 'WeRC 取图失败'
+            flag = '' if e.retryable is None else f'；retryable={str(e.retryable).lower()}'
+            log.warning('%s：%s%s；未自动重试', summary, e, flag)
+            return None
         except Exception as e:
             log.warning(f"取图异常: {e}")
             return None

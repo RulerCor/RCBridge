@@ -30,6 +30,8 @@ OneBot `reply` 支持微信原生文字引用，需要 WeRC 的引用接口支�
 
 「设置 → 启动」可分别开启 **Windows 登录后启动 RCBridge** 和 **启动 RCBridge 后自动开启桥接**。两项默认关闭；第一项仅适用于当前 Windows 用户。
 
+点击窗口右上角的 × 可选择退出或最小化到系统托盘。最小化到托盘不会停止桥接；双击托盘图标可恢复窗口。
+
 [详细使用与排错](docs/使用指南.md) · [变更记录](CHANGELOG.md) · [许可证](LICENSE)
 
 ## English
@@ -59,6 +61,8 @@ Proactive sends resolve targets from the current account’s WeRC native observa
 3. Save, close and reopen RCBridge, then start the bridge. Check that both connections are up and verify message delivery with a test contact.
 
 **Settings → Startup** has separate options for opening RCBridge at Windows sign-in and starting the bridge when RCBridge opens. Both are off by default; sign-in startup applies to the current Windows user only.
+
+The window’s × button offers a choice between exiting and minimizing to the system tray. The bridge keeps running in the tray; double-click its icon to restore the window.
 
 [Usage and troubleshooting (Chinese)](docs/使用指南.md) · [Changelog (Chinese)](CHANGELOG.md) · [License](LICENSE)
 
